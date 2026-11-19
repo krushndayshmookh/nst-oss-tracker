@@ -213,3 +213,140 @@ breakdown ("why"). An overall `prestigeScore` = max over enabled prestigious pro
 ## G5. Tests
 Access (no owner cookie ⇒ 401 even with admin cookie; public/admin endpoints never include scores), scoring features on fixtures,
 window boundaries in IST, band thresholds, recompute idempotent, org mapping, CSV private.
+
+# API shapes (D, F) — written by CAMPUS-BACKEND, binding for the UI
+Implemented in `src/campuses.js`, `src/ranged.js` (`activity`), `src/routes/public.js`; tests in `test/campuses.test.js`.
+The examples are real answers of the full import (2,800 students) for AY 2026-27 on 19 Nov 2026, shortened.
+
+Conventions used by every number below:
+- **Rate** = `count / students × 100`, rounded to 1 decimal. `students` = ACTIVE tracked students of that group (the cohort).
+  **A cohort of 0 students gives `null`** for every rate (never 0, Infinity or NaN): render "–".
+- `…Pct` = share of the cohort's students (0–100); `…Per100` = PRs per 100 students of the cohort (can exceed 100).
+- `smallCohort: true` when `0 < students < 30` (`smallCohortBelow` is echoed so the UI never hard-codes 30). An empty cohort is not "small".
+- Campus order everywhere: `ADYPU, RU, SVYASA, SMRU, Unknown` (Unknown last; the UI hides it from charts by default).
+- Counts follow addendum A2 (opened = createdAt in range, merged = mergedAt in range). Same `from` / `to` / `range` params, same 60 s cache,
+  no other query parameters on the two campus endpoints.
+
+## GET /api/activity (addendum D additions; everything else unchanged)
+New top-level `cohorts` and `smallCohortBelow`; every `byCampusMonth` row gains `students, per100Opened, per100Merged, activeStudents, activePct`.
+- The denominator follows the `campus` / `year` / `batch` filters of the request (not `author` / `repo` / `owner` / `category`):
+  `?year=1st year` → cohort = first-year students of each campus; `?campus=RU` → one cohort.
+- `activeStudents` = distinct students of that campus with ≥1 PR opened or merged that month in the selected category (same definition as
+  `byMonth[].activeStudents`; the campus values of a month add up to it). `activePct` = that / `students` × 100.
+- `byCampusMonth` stays sparse (only campus-months with ≥1 event: zero-fill against `byMonth[].month`), sorted by campus (order above), then month.
+- `cohorts` lists every campus with ≥1 active student under the filters, plus any campus that appears in `byCampusMonth` (then `students: 0`
+  and `null` rates on its rows).
+```json
+{ "range": {"from":"2026-07-01","to":"2027-06-30","label":"AY 2026-27","preset":"ay"}, "tz":"Asia/Kolkata", "metric":"opened",
+  "totals": {"opened":3124,"merged":1652,"activeStudents":281},
+  "byMonth": [{"month":"2026-10","opened":870,"merged":401,"activeStudents":172}],
+  "byWeek": [], "byWeekday": [], "byHour": [], "heatmap": [],
+  "byCampusMonth": [
+    {"campus":"ADYPU","month":"2026-10","opened":157,"merged":60,"students":1002,"per100Opened":15.7,"per100Merged":6,"activeStudents":35,"activePct":3.5},
+    {"campus":"RU","month":"2026-10","opened":559,"merged":287,"students":1504,"per100Opened":37.2,"per100Merged":19.1,"activeStudents":93,"activePct":6.2},
+    {"campus":"SVYASA","month":"2026-10","opened":152,"merged":54,"students":240,"per100Opened":63.3,"per100Merged":22.5,"activeStudents":42,"activePct":17.5},
+    {"campus":"SMRU","month":"2026-10","opened":1,"merged":0,"students":49,"per100Opened":2,"per100Merged":0,"activeStudents":1,"activePct":2},
+    {"campus":"Unknown","month":"2026-10","opened":1,"merged":0,"students":5,"per100Opened":20,"per100Merged":0,"activeStudents":1,"activePct":20} ],
+  "cohorts": [ {"campus":"ADYPU","students":1002,"smallCohort":false}, {"campus":"RU","students":1504,"smallCohort":false},
+               {"campus":"SVYASA","students":240,"smallCohort":false}, {"campus":"SMRU","students":49,"smallCohort":false},
+               {"campus":"Unknown","students":5,"smallCohort":true} ],
+  "smallCohortBelow": 30,
+  "busiest": {"day":null,"week":null,"month":null}, "byDate": [] }
+```
+
+## GET /api/campuses
+`{ range, previousRange, smallCohortBelow, campuses, rows, totals, total, sharedOrgs }` (about 34 kB for the full dataset).
+- `rows`: one **stat block** + `distribution` per campus × year (only groups with ≥1 student), sorted by campus, then year (1st … 4th, alumni, Unknown).
+- `totals`: one stat block per campus that has ≥1 student (`year:"All"`) **with the extras** `funnel, distribution, previous, delta, topOrgs, topRepos`.
+  Subtotal invariant: every count of `totals[campus]` (and each `byCategory` / `tierMix` cell) = the sum of that campus's `rows`; every count of `total` = the sum of `totals`.
+- `total`: the same shape for all campuses together (`campus:"All"`, includes Unknown). It equals `/api/overview` for the same range; a
+  `totals` entry equals `/api/overview?campus=<campus>`.
+- `campuses`: the scorecard list with cohort sizes: ADYPU, RU, SVYASA, SMRU always (`students: 0` when a campus has no tracked student yet: it
+  then has NO entry in `totals` / `rows`, show "no tracked students"), Unknown only when it has students.
+- `previousRange`: the equal-length period right before the range, used for `previous` / `delta`. A range that ends in the future is cut at
+  today first (AY 2026-27 on 19 Nov 2026 = 1 Jul – 19 Nov = 142 days, compared with the 142 days before 1 Jul). `null` for `range=all` and for a
+  range without `from`; `previous` and `delta` are then `null` too. The previous period is measured on TODAY's roster (there is no historical one).
+- `sharedOrgs`: owners with open-source PRs (opened or merged in range) from students of ≥2 campuses (Unknown is not counted as a campus),
+  by `osMerged` desc then `osPrs`, max 50.
+```json
+{ "range": {"from":"2026-07-01","to":"2027-06-30","label":"AY 2026-27","preset":"ay"},
+  "previousRange": {"from":"2026-02-09","to":"2026-06-30","days":142},
+  "smallCohortBelow": 30,
+  "campuses": [ {"campus":"ADYPU","students":1002,"smallCohort":false}, {"campus":"RU","students":1504,"smallCohort":false},
+                {"campus":"SVYASA","students":240,"smallCohort":false}, {"campus":"SMRU","students":49,"smallCohort":false},
+                {"campus":"Unknown","students":5,"smallCohort":true} ],
+  "rows": [ {
+    "campus":"RU", "year":"2nd year", "batch":2025,
+    "students":575, "withAnyPr":241, "withOsPr":45, "withOsMerged":30, "withMajorMerged":23,
+    "totalPrs":3380, "osPrs":580, "osMerged":345, "osMajorMerged":142,
+    "byCategory": {"open_source":580,"practice":1,"nst_internal":141,"peer_repo":813,"own_repo":984,"low_signal":861},
+    "smallCohort":false,
+    "withAnyPrPct":41.9, "withOsPrPct":7.8, "withOsMergedPct":5.2, "withMajorMergedPct":4,
+    "totalPrsPer100":587.8, "osPrsPer100":100.9, "osMergedPer100":60, "osMajorMergedPer100":24.7,
+    "tierMix": { "opened": {"major":297,"established":185,"emerging":98}, "merged": {"major":142,"established":130,"emerging":73} },
+    "distribution": { "contributors":30, "buckets": {"1":8,"2-4":4,"5-9":9,"10+":9}, "median":5.5, "max":79,
+                      "top10PctStudents":3, "top10PctMerged":154, "top10PctShare":44.6 }
+  } ],
+  "totals": [ {
+    "campus":"RU", "year":"All", "batch":null, "students":1504, "…":"every stat-block field shown above",
+    "funnel": [ {"key":"tracked","label":"Tracked students","count":1504,"pct":100},
+                {"key":"anyPr","label":"Any PR","count":778,"pct":51.7},
+                {"key":"osPr","label":"Open-source PR","count":159,"pct":10.6},
+                {"key":"osMerged","label":"Merged open-source PR","count":114,"pct":7.6},
+                {"key":"majorMerged","label":"Merged in a major project","count":89,"pct":5.9} ],
+    "distribution": { "contributors":114, "buckets": {"1":30,"2-4":27,"5-9":27,"10+":30}, "median":4.5, "max":79,
+                      "top10PctStudents":12, "top10PctMerged":571, "top10PctShare":51.4 },
+    "previous": { "students":1504, "withAnyPr":662, "withOsPr":113, "withOsMerged":67, "withMajorMerged":52,
+                  "totalPrs":6455, "osPrs":1015, "osMerged":547, "osMajorMerged":216,
+                  "withOsMergedPct":4.5, "osPrsPer100":67.5, "osMergedPer100":36.4, "osMajorMergedPer100":14.4 },
+    "delta": { "osMerged":564, "osMergedPct":103.1, "osPrs":1027, "osMajorMerged":361, "withOsMerged":47,
+               "withOsMergedPct":3.1, "osMergedPer100":37.5 },
+    "topOrgs":  [ {"login":"apache","osPrs":239,"osMerged":169,"students":16}, {"login":"sugarlabs","osPrs":135,"osMerged":99,"students":10} ],
+    "topRepos": [ {"name":"sugarlabs/musicblocks","stars":930,"tier":"established","osPrs":133,"osMerged":98,"students":8} ]
+  } ],
+  "total": { "campus":"All", "year":"All", "batch":null, "…":"same shape as a totals entry" },
+  "sharedOrgs": [ {"login":"apache","campuses":3,"osPrs":266,"osMerged":188,"students":20,
+                   "byCampus": [ {"campus":"ADYPU","osPrs":25,"osMerged":19,"students":3}, {"campus":"RU","osPrs":239,"osMerged":169,"students":16},
+                                 {"campus":"SVYASA","osPrs":2,"osMerged":0,"students":1} ]} ]
+}
+```
+Field notes:
+- Stat-block counts: `students` (cohort), `withAnyPr` / `withOsPr` / `withOsMerged` / `withMajorMerged` (students), `totalPrs` / `osPrs`
+  (opened in range), `osMerged` / `osMajorMerged` (merged in range; "major" = tier major). Scorecard = `students`, `withOsMergedPct`,
+  `osMergedPer100`, `osMajorMerged`, `delta`.
+- `byCategory` IS the category mix (PRs opened in range per category; sums to `totalPrs`). `tierMix.merged` sums to `osMerged`, `tierMix.opened` to `osPrs`.
+- `funnel[].pct` = % of tracked (null for an empty cohort); the steps are nested (each is a subset of the one before).
+- `distribution`: `contributors` = students with ≥1 merged OS PR in range (= `withOsMerged`); `buckets` (keys `"1"`, `"2-4"`, `"5-9"`, `"10+"`) sum
+  to `contributors`; `median` = median merged OS PRs among contributors (null when there are none; can end in .5); `top10PctStudents` =
+  ceil(10 % of contributors), at least 1; `top10PctShare` = % of the group's merged OS PRs that came from them (null when there are none).
+- `delta` = current − previous: plain differences (`withOsMergedPct` and `osMergedPer100` in points). `delta.osMergedPct` is the RELATIVE
+  change of `osMerged` in % (null when the previous value is 0). ▲ when > 0, ▼ when < 0, nothing when 0 or null.
+- `topOrgs` / `topRepos`: by `osMerged` desc, then `osPrs`; 5 each here (10 on the campus page). `students` = distinct students of that
+  campus (of all campuses in `total`). Only owners / repos with open-source PRs in range.
+- Monthly lines per campus: `/api/activity?category=open_source` → `byCampusMonth` (`per100Merged` | `activePct` | `merged` for the three toggle states).
+- Year-wise bars within a campus: the `rows` of that campus (cohort = that campus-year).
+
+## GET /api/campuses/:campus
+`:campus` is one of ADYPU, RU, SVYASA, SMRU, Unknown (case-insensitive; the answer carries the canonical spelling); anything else → 404
+`not_found`. A campus of the list without students answers 200 with zeros, `null` rates and empty lists.
+```json
+{ "range": {"from":"2026-07-01","to":"2027-06-30","label":"AY 2026-27","preset":"ay"},
+  "previousRange": {"from":"2026-02-09","to":"2026-06-30","days":142}, "smallCohortBelow": 30,
+  "campus": "RU",
+  "totals":  { "…":"the totals entry of /api/campuses for this campus: stat block + funnel, distribution, previous, delta (topOrgs / topRepos are top-level here)" },
+  "overall": { "…":"plain stat block of all campuses together (campus:\"All\"), for 'vs all campuses' comparisons" },
+  "years":   [ { "…":"the rows of /api/campuses for this campus (stat block + distribution; cohort = that campus-year)" } ],
+  "monthly": [ {"month":"2026-07","osOpened":305,"osMerged":156,"allOpened":1766,"osOpenedPer100":20.3,"osMergedPer100":10.4} ],
+  "topStudents": [ {"username":"alice","name":"Alice","campus":"RU","batch":2025,"year":"2nd year",
+                    "stats":{"totalPrs":157,"mergedPrs":91,"osPrs":103,"osMerged":79,"osOpen":16,"osMajorMerged":48,"osRepos":16,"osOrgs":11,
+                             "byCategory":{"open_source":103,"practice":0,"nst_internal":0,"peer_repo":7,"own_repo":17,"low_signal":30},
+                             "firstPrAt":"2026-07-01T17:36:50.000Z","lastPrAt":"2026-11-15T12:21:41.000Z","lastOsMergedAt":"2026-11-19T11:47:49.000Z"}} ],
+  "topRepos": [ {"name":"sugarlabs/musicblocks","stars":930,"tier":"established","osPrs":133,"osMerged":98,"students":8} ],
+  "topOrgs":  [ {"login":"apache","osPrs":239,"osMerged":169,"students":16} ],
+  "sharedOrgs": [ {"login":"apache","campuses":3,"osPrs":266,"osMerged":188,"students":20,"byCampus":[{"campus":"ADYPU","osPrs":25,"osMerged":19,"students":3}]} ] }
+```
+- `topStudents`: up to 20 students with ≥1 merged OS PR in range, by `osMerged` desc then `osPrs` (the public student shape with ranged `stats`).
+- `topRepos` / `topOrgs`: up to 10 each. `sharedOrgs`: the entries of `/api/campuses.sharedOrgs` that include this campus (totals over all campuses + `byCampus`).
+- `monthly`: zero-filled months of the range up to today (same rules as `/api/overview.monthly`), with per-100 rates on this campus's cohort.
+- Activity strip (monthly + weekday + calendar heatmap): `/api/activity?campus=<campus>` (existing endpoint; `byMonth`, `byWeekday`, `byDate`).
+- Students list filtered to the campus: `/api/students?campus=<campus>` (existing).

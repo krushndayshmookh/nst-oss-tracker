@@ -7,6 +7,7 @@
 import express from 'express';
 import { collections } from '../db.js';
 import { CATEGORIES, TIERS, YEAR_LABELS, yearLabel } from '../classify.js';
+import { SMALL_COHORT, byCampusOrder, campusComparison, campusNamed, cohortOut, emptyCampusTotal, plainBlock, rate } from '../campuses.js';
 import { emptyByCategory, emptyOwnerStats, emptyRepoStats, emptyStudentStats } from '../ingest.js';
 import { loadRules } from '../rules.js';
 import { csvLine } from '../csv.js';
@@ -29,25 +30,6 @@ export const GROUPS_PRESET = 9; // e.g. 3 ranges x (students, repos, orgs)
 export const GROUPS_CUSTOM = 3;
 const KNOWN_PARAMS = ['campus', 'year', 'batch', 'category', 'state', 'tier', 'q', 'from', 'to', 'range', 'sort', 'order', 'page', 'limit',
   'author', 'repo', 'owner', 'hasOs', 'metric'];
-
-// ---------- campus table ----------
-
-function emptyCampusRow(campus, year, batch) {
-  return { campus, year, batch, students: 0, withAnyPr: 0, withOsPr: 0, withOsMerged: 0, withMajorMerged: 0,
-    totalPrs: 0, osPrs: 0, osMerged: 0, byCategory: emptyByCategory() };
-}
-function addStudent(row, st) {
-  st ||= {};
-  row.students++;
-  if (st.totalPrs > 0 || st.mergedPrs > 0) row.withAnyPr++;
-  if (st.osPrs > 0 || st.osMerged > 0) row.withOsPr++;
-  if (st.osMerged > 0) row.withOsMerged++;
-  if (st.osMajorMerged > 0) row.withMajorMerged++;
-  row.totalPrs += st.totalPrs || 0;
-  row.osPrs += st.osPrs || 0;
-  row.osMerged += st.osMerged || 0;
-  for (const k of CATEGORIES) row.byCategory[k] += st.byCategory?.[k] || 0;
-}
 
 const collator = new Intl.Collator('en', { sensitivity: 'accent' });
 /** Mongo sort spec: the chosen field, then a tie-breaker (skipped when it is the chosen field itself, or it would overwrite the direction), then _id. */
@@ -246,32 +228,43 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     });
   });
 
+  // ---------- campuses (addenda D and F) ----------
+
+  // One comparison per range feeds the list and every campus page; it is small, so a handful are kept.
+  const comparisons = createCache({ ttlMs: groupTtl, max: 6 });
+  const comparison = (range, now) => comparisons.memo(`c:${rangeKey(range)}`, async () =>
+    campusComparison(db, { range, ranged: range.all ? null : await grouped('author', range), now, tz }));
+  const top = (list, n) => list.slice(0, n);
+
   r.get('/campuses', async (req, res) => {
     const now = new Date();
     const range = await rangeOf(req, now);
-    const ranged = range.all ? null : await grouped('author', range);
-    const rows = new Map();
-    const totals = new Map();
-    const total = emptyCampusRow('All', 'All', null);
-    for await (const s of c.students.find({ active: true }, { projection: { campus: 1, batch: 1, ...(ranged ? {} : { stats: 1 }) } }).maxTimeMS(T)) {
-      const campus = s.campus || 'Unknown';
-      const year = yearLabel(s.batch, now);
-      const key = `${campus}\u0000${year}`;
-      const batch = Number.isFinite(s.batch) ? s.batch : null;
-      const st = ranged ? (ranged.has(s._id) ? studentStats(ranged.get(s._id)) : null) : s.stats;
-      let row = rows.get(key);
-      if (!row) { row = emptyCampusRow(campus, year, batch); rows.set(key, row); } else if (row.batch !== batch) row.batch = null; // several batches share a label
-      if (!totals.has(campus)) totals.set(campus, emptyCampusRow(campus, 'All', null));
-      addStudent(row, st);
-      addStudent(totals.get(campus), st);
-      addStudent(total, st);
-    }
-    const byCampus = (a, b) => (a.campus < b.campus ? -1 : a.campus > b.campus ? 1 : 0);
+    const d = await comparison(range, now);
+    const five = (b) => ({ ...b, topOrgs: top(b.topOrgs, 5), topRepos: top(b.topRepos, 5) });
     res.json({
-      range: rangeOut(range),
-      rows: [...rows.values()].sort((a, b) => byCampus(a, b) || YEAR_LABELS.indexOf(a.year) - YEAR_LABELS.indexOf(b.year)),
-      totals: [...totals.values()].sort(byCampus),
-      total,
+      range: rangeOut(range), previousRange: d.previousRange, smallCohortBelow: d.smallCohortBelow, campuses: d.campuses,
+      rows: d.rows, totals: d.totals.map(five), total: five(d.total), sharedOrgs: d.sharedOrgs,
+    });
+  });
+
+  r.get('/campuses/:campus', async (req, res) => {
+    const campus = campusNamed(req.params.campus);
+    if (!campus) throw notFound('campus not found');
+    const now = new Date();
+    const range = await rangeOf(req, now);
+    const [d, series] = await Promise.all([comparison(range, now), monthlySeries(db, { match: { campus }, range, tz, now })]);
+    const { topOrgs, topRepos, ...totals } = d.totals.find((t) => t.campus === campus) || emptyCampusTotal(campus, Boolean(d.previousRange));
+    const best = d.topStudents.get(campus) || [];
+    const docs = best.length ? await c.students.find({ _id: { $in: best.map((e) => e.id) }, active: true }, { projection: { username: 1, name: 1, campus: 1, batch: 1 } }).toArray() : [];
+    const byId = new Map(docs.map((s) => [s._id, s]));
+    res.json({
+      range: rangeOut(range), previousRange: d.previousRange, smallCohortBelow: d.smallCohortBelow, campus,
+      totals, overall: plainBlock(d.total),
+      years: d.rows.filter((row) => row.campus === campus),
+      monthly: series.map((m) => ({ ...m, osOpenedPer100: rate(m.osOpened, totals.students), osMergedPer100: rate(m.osMerged, totals.students) })),
+      topStudents: best.filter((e) => byId.has(e.id)).map((e) => studentOut({ ...byId.get(e.id), stats: e.stats }, now)),
+      topRepos, topOrgs,
+      sharedOrgs: d.sharedOrgs.filter((o) => o.byCampus.some((x) => x.campus === campus)),
     });
   });
 
@@ -290,8 +283,18 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     if (repo) match.repoLc = lc(repo);
     const owner = str(req.query, 'owner');
     if (owner) match.ownerLc = lc(owner);
-    const a = await activity(db, { match, range, metric, tz, now });
-    res.json({ range: rangeOut(range), tz, metric, ...a });
+    // cohort sizes for per-100 rates: active tracked students under the same campus / year / batch filters (addendum D)
+    const groups = await c.students.aggregate([{ $match: { active: true, ...cohortFilter(req.query, now) } }, { $group: { _id: '$campus', n: { $sum: 1 } } }], AGG).toArray();
+    const sizes = new Map();
+    for (const g of groups) sizes.set(g._id || 'Unknown', (sizes.get(g._id || 'Unknown') || 0) + g.n);
+    const a = await activity(db, { match, range, metric, tz, now, cohorts: sizes });
+    for (const row of a.byCampusMonth) if (!sizes.has(row.campus)) sizes.set(row.campus, 0);
+    const { busiest, byDate, truncated, ...rest } = a;
+    res.json({
+      range: rangeOut(range), tz, metric, ...rest,
+      cohorts: [...sizes.keys()].sort(byCampusOrder).map((x) => cohortOut(x, sizes.get(x))), smallCohortBelow: SMALL_COHORT,
+      busiest, ...(byDate && { byDate }), ...(truncated && { truncated }),
+    });
   });
 
   // ---------- students ----------

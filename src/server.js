@@ -12,6 +12,9 @@ import { startRunner } from './jobs.js';
 import { createCache } from './cache.js';
 import { clientIp, createRateLimiter } from './limits.js';
 import { ensureAcademicYear } from './dates.js';
+import { createOwnerAuth } from './owner.js';
+import { ownerRouter } from './routes/owner.js';
+import { ensurePrograms } from './programs.js';
 
 const CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data:", "connect-src 'self'",
   "font-src 'self'", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'", "form-action 'self'"].join('; ');
@@ -19,7 +22,7 @@ const CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsaf
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
-export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, github = null, authOptions = undefined } = {}) {
+export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, github = null, authOptions = undefined, ownerOptions = undefined } = {}) {
   const app = express();
   const auth = createAuth(config, authOptions);
   app.disable('x-powered-by');
@@ -56,6 +59,9 @@ export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, g
   app.use('/api/admin', (req, res, next) => (req.path === '/students/bulk' && auth.isAdmin(req) ? bulkJson : smallJson)(req, res, next));
   const cache = createCache({ ttlMs: config.publicCacheMs ?? 0 });
   app.use('/api/admin', adminRouter({ db, config, auth, github }));
+  // The private page (SPEC addendum G): admin session + a second password. Mounted before the public router and
+  // never given the shared cache, so nothing it returns can be cached or served to anyone else.
+  app.use('/api/owner', express.json({ limit: '2mb' }), ownerRouter({ db, config, owner: createOwnerAuth(config, auth, ownerOptions) }));
   app.use('/api', publicRouter({ db, config, auth, cache }));
   app.use('/api', (req, res, next) => next(new ApiError(404, 'not_found', `no such endpoint: ${req.method} ${req.baseUrl}${req.path}`)));
 
@@ -110,6 +116,8 @@ async function main() {
   await ensureIndexes(db);
   await ensureRules(db);
   await ensureAcademicYear(db);
+  await ensurePrograms(db);
+  if (config.ownerProblem && config.ownerPassword) console.warn(`WARNING: the private page is closed: ${config.ownerProblem}`);
   const app = createApp({ db, config });
   // Listen first and only then start the job runner and the scheduler: a process that cannot bind its port (already in
   // use) must exit instead of staying alive as a second, invisible scheduler. Express 5 passes the listen error to the

@@ -181,7 +181,7 @@ test('ranges: IST boundaries, opened vs merged in range, default = academic year
 
     // ---- activity
     const a = await get(`/api/activity?${AY}&category=all`);
-    assert.deepEqual(Object.keys(a), ['range', 'tz', 'metric', 'totals', 'byMonth', 'byWeek', 'byWeekday', 'byHour', 'heatmap', 'byCampusMonth', 'busiest', 'byDate']);
+    assert.deepEqual(Object.keys(a), ['range', 'tz', 'metric', 'totals', 'byMonth', 'byWeek', 'byWeekday', 'byHour', 'heatmap', 'byCampusMonth', 'cohorts', 'smallCohortBelow', 'busiest', 'byDate']);
     assert.deepEqual(a.totals, { opened: 3, merged: 2, activeStudents: 2 });
     assert.deepEqual([a.byMonth[0].month, a.byMonth.at(-1).month, a.byMonth.length], ['2026-07', '2027-06', 12]);
     assert.deepEqual(a.byMonth.find((m) => m.month === '2026-11'), { month: '2026-11', opened: 1, merged: 0, activeStudents: 1 });
@@ -198,8 +198,11 @@ test('ranges: IST boundaries, opened vs merged in range, default = academic year
     assert.deepEqual(a.heatmap.find((x) => x.dow === 6 && x.hour === 19), { dow: 6, hour: 19, opened: 0, merged: 0 }, 'the UTC cell stays empty');
     assert.ok(a.byWeek.every((w, i, arr) => new Date(`${w.weekStart}T00:00:00Z`).getUTCDay() === 1 && (i === 0 || arr[i - 1].weekStart < w.weekStart)), 'weeks start on Monday');
     assert.deepEqual(a.byWeek.find((w) => w.weekStart === '2026-10-26'), { weekStart: '2026-10-26', opened: 1, merged: 0 });
-    assert.deepEqual(a.byCampusMonth, [{ campus: 'ADYPU', month: '2026-11', opened: 1, merged: 0 }, { campus: 'RU', month: '2026-07', opened: 0, merged: 1 },
+    assert.deepEqual(a.byCampusMonth.map(({ campus, month, opened, merged }) => ({ campus, month, opened, merged })), [{ campus: 'ADYPU', month: '2026-11', opened: 1, merged: 0 }, { campus: 'RU', month: '2026-07', opened: 0, merged: 1 },
       { campus: 'RU', month: '2026-09', opened: 1, merged: 0 }, { campus: 'RU', month: '2027-06', opened: 1, merged: 1 }]);
+    // addendum D: rates on the cohort (2 RU students, 1 ADYPU)
+    assert.deepEqual(a.cohorts, [{ campus: 'ADYPU', students: 1, smallCohort: true }, { campus: 'RU', students: 2, smallCohort: true }]);
+    assert.deepEqual(a.byCampusMonth[1], { campus: 'RU', month: '2026-07', opened: 0, merged: 1, students: 2, per100Opened: 0, per100Merged: 50, activeStudents: 1, activePct: 50 });
     assert.deepEqual(a.busiest, { day: { date: '2026-09-10', count: 1 }, week: { weekStart: '2026-09-07', count: 1 }, month: { month: '2026-09', count: 1 } });
     const m = await get(`/api/activity?${AY}&metric=merged`);
     assert.deepEqual([m.metric, m.totals.merged, m.totals.opened, m.busiest.day], ['merged', 2, 2, { date: '2026-07-02', count: 1 }], 'default category is open source');
@@ -683,7 +686,7 @@ test('activity: every bucket in IST, zero-filled axes, filters, metric, long and
       { dow: 1, hour: 0, opened: 2, merged: 0 }, { dow: 2, hour: 0, opened: 0, merged: 1 }, { dow: 3, hour: 9, opened: 3, merged: 0 }, { dow: 3, hour: 10, opened: 0, merged: 1 },
       { dow: 3, hour: 23, opened: 1, merged: 0 }, { dow: 5, hour: 17, opened: 0, merged: 1 }, { dow: 7, hour: 23, opened: 0, merged: 1 },
     ]);
-    assert.deepEqual(a.byCampusMonth, [
+    assert.deepEqual(a.byCampusMonth.map(({ campus, month, opened, merged }) => ({ campus, month, opened, merged })), [
       { campus: 'ADYPU', month: '2026-08', opened: 1, merged: 1 }, { campus: 'ADYPU', month: '2026-09', opened: 1, merged: 0 },
       { campus: 'RU', month: '2026-08', opened: 4, merged: 2 }, { campus: 'RU', month: '2026-09', opened: 0, merged: 1 },
     ]);

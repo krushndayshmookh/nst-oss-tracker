@@ -3,6 +3,8 @@ import { MongoClient } from 'mongodb';
 import { loadConfig } from './config.js';
 
 export const COLLECTIONS = ['students', 'prs', 'repos', 'owners', 'settings', 'jobs'];
+/** Private to /api/owner/* (SPEC addendum G): readiness scores, the owner's notes, program org lists, past outcomes. */
+export const OWNER_COLLECTIONS = ['program_scores', 'owner_notes', 'program_orgs', 'program_outcomes'];
 
 export async function connect(cfg = loadConfig()) {
   const client = new MongoClient(cfg.mongoUri, { serverSelectionTimeoutMS: cfg.serverSelectionTimeoutMS ?? 10000 });
@@ -46,5 +48,9 @@ export async function ensureIndexes(db) {
       { key: { 'stats.prs': -1 } },
     ]),
     c.jobs.createIndexes([{ key: { createdAt: -1 } }]),
+    // private collections of the owner page (SPEC addendum G); never read by public or admin routes
+    db.collection('program_scores').createIndexes([{ key: { prestigeScore: -1 } }, { key: { campus: 1, batch: 1 } }]),
+    db.collection('program_orgs').createIndexes([{ key: { program: 1, year: 1 } }]),
+    db.collection('program_outcomes').createIndexes([{ key: { program: 1, year: 1 } }, { key: { student: 1 } }]),
   ]);
 }

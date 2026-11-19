@@ -2,7 +2,7 @@
 // A PR is "opened in range" when createdAt is inside the range and "merged in range" when mergedAt is, whatever
 // the day it was opened. With an unbounded range the numbers equal the precomputed all-time `stats`.
 import { collections } from './db.js';
-import { CATEGORIES } from './classify.js';
+import { CAMPUSES, CATEGORIES } from './classify.js';
 import { emptyByCategory } from './ingest.js';
 import { TZ, addDays, daysBetween, inRange, zoned } from './dates.js';
 
@@ -12,6 +12,8 @@ const MAX_DAYS = 800;
 export const eq = (f, v) => ({ $eq: [f, v] });
 export const and = (...c) => { const list = c.filter((x) => x !== true); return list.length === 0 ? true : list.length === 1 ? list[0] : { $and: list }; };
 export const sumIf = (cond) => (cond === true ? { $sum: 1 } : { $sum: { $cond: [cond, 1, 0] } });
+/** count per 100 students (= % of students), 1 decimal; null for a cohort without students (SPEC addendum D). */
+export const per100 = (count, students) => (students > 0 ? Math.round(((count || 0) * 1000) / students) / 10 : null);
 export const OS = eq('$category', 'open_source');
 export const MERGED = eq('$state', 'merged');
 
@@ -135,8 +137,11 @@ const dowOf = (ymd) => new Date(`${ymd}T00:00:00Z`).getUTCDay() || 7; // Mon=1 â
 /**
  * Activity of the PRs matching `match` (active:true is added) inside `range`, bucketed in `tz`.
  * -> { totals, byMonth, byWeek, byDate | truncated, byWeekday, byHour, heatmap, byCampusMonth, busiest }
+ * With `cohorts` (Map<campus, number of active tracked students>, SPEC addendum D) every byCampusMonth row also carries
+ * students, per100Opened, per100Merged (count / students x 100, 1 decimal), activeStudents (distinct students of the
+ * campus with an event that month) and activePct. A campus without students has null rates.
  */
-export async function activity(db, { match = {}, range, metric = 'opened', tz = TZ, now = new Date() }) {
+export async function activity(db, { match = {}, range, metric = 'opened', tz = TZ, now = new Date(), cohorts = null }) {
   const { prs } = collections(db);
   const cond = inRange(range);
   // Opened and merged events are read by two index-friendly pipelines each (hour x campus counts, month x author pairs)
@@ -146,7 +151,7 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
     const str = (format) => ({ $dateToString: { date: `$${field}`, format, timezone: tz } });
     return [
       prs.aggregate([{ $match }, { $group: { _id: { h: str('%Y-%m-%dT%H'), c: '$campus' }, n: { $sum: 1 } } }], AGG).toArray(),
-      prs.aggregate([{ $match }, { $group: { _id: { m: str('%Y-%m'), a: '$author' } } }], AGG).toArray(),
+      prs.aggregate([{ $match }, { $group: { _id: { m: str('%Y-%m'), a: '$author' }, c: { $first: '$campus' } } }], AGG).toArray(),
     ];
   };
   const [openedRows, openedAuthors, mergedRows, mergedAuthors] = await Promise.all([
@@ -163,6 +168,7 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
   const cells = new Map();
   const campusMonths = new Map();
   const monthAuthors = new Map();
+  const campusMonthAuthors = new Map();
   const allAuthors = new Set();
   const totals = { opened: 0, merged: 0, activeStudents: 0 };
   const bump = (map, key) => { let v = map.get(key); if (!v) { v = zero(); map.set(key, v); } return v; };
@@ -190,6 +196,12 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
     if (!set) { set = new Set(); monthAuthors.set(r._id.m, set); }
     set.add(r._id.a);
     allAuthors.add(r._id.a);
+    if (cohorts) {
+      const key = `${r.c || 'Unknown'}|${r._id.m}`;
+      let active = campusMonthAuthors.get(key);
+      if (!active) { active = new Set(); campusMonthAuthors.set(key, active); }
+      active.add(r._id.a);
+    }
   }
   totals.activeStudents = allAuthors.size;
 
@@ -218,8 +230,15 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
   for (let d = 1; d <= 7; d++) out.byWeekday.push({ dow: d, ...(weekdays.get(d) || zero()) });
   for (let hh = 0; hh < 24; hh++) out.byHour.push({ hour: hh, ...(hours.get(hh) || zero()) });
   for (let d = 1; d <= 7; d++) for (let hh = 0; hh < 24; hh++) out.heatmap.push({ dow: d, hour: hh, ...(cells.get(`${d}-${hh}`) || zero()) });
-  out.byCampusMonth = [...campusMonths.entries()].map(([key, v]) => { const [campus, month] = key.split('|'); return { campus, month, ...v }; })
-    .sort((a, b) => (a.campus < b.campus ? -1 : a.campus > b.campus ? 1 : a.month < b.month ? -1 : 1));
+  const campusRank = (x) => { const i = CAMPUSES.indexOf(x); return i < 0 ? CAMPUSES.length : i; };
+  out.byCampusMonth = [...campusMonths.entries()].map(([key, v]) => {
+    const [campus, month] = key.split('|');
+    if (!cohorts) return { campus, month, ...v };
+    const students = cohorts.get(campus) ?? 0;
+    const active = campusMonthAuthors.get(key)?.size ?? 0;
+    return { campus, month, ...v, students, per100Opened: per100(v.opened, students), per100Merged: per100(v.merged, students),
+      activeStudents: active, activePct: per100(active, students) };
+  }).sort((a, b) => campusRank(a.campus) - campusRank(b.campus) || (a.campus < b.campus ? -1 : a.campus > b.campus ? 1 : a.month < b.month ? -1 : 1));
   const best = (map) => { let top = null; for (const [key, v] of map) if (v[metric] > 0 && (!top || v[metric] > top[1] || (v[metric] === top[1] && key < top[0]))) top = [key, v[metric]]; return top; };
   const d = best(dates); const w = best(weeks); const m = best(months);
   if (d) out.busiest.day = { date: d[0], count: d[1] };

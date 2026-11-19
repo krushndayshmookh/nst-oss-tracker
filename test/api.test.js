@@ -159,8 +159,9 @@ test('campuses', async () => {
     ['ADYPU', yearLabel(2026), 2026, 1, 1, 2], ['RU', yearLabel(2025), 2025, 1, 1, 7], ['RU', 'Unknown', null, 1, 0, 0],
   ]);
   assert.deepEqual(body.totals.map((r) => [r.campus, r.year, r.batch, r.students, r.osPrs]), [['ADYPU', 'All', null, 1, 2], ['RU', 'All', null, 2, 2]]);
-  assert.deepEqual({ ...body.total, byCategory: null }, { campus: 'All', year: 'All', batch: null, students: 3, withAnyPr: 2, withOsPr: 2, withOsMerged: 2, withMajorMerged: 2,
-    totalPrs: 9, osPrs: 4, osMerged: 3, byCategory: null });
+  const { campus, year, batch, students, withAnyPr, withOsPr, withOsMerged, withMajorMerged, totalPrs, osPrs, osMerged } = body.total;
+  assert.deepEqual({ campus, year, batch, students, withAnyPr, withOsPr, withOsMerged, withMajorMerged, totalPrs, osPrs, osMerged },
+    { campus: 'All', year: 'All', batch: null, students: 3, withAnyPr: 2, withOsPr: 2, withOsMerged: 2, withMajorMerged: 2, totalPrs: 9, osPrs: 4, osMerged: 3 });
   assert.deepEqual(body.total.byCategory, { open_source: 4, practice: 1, nst_internal: 1, peer_repo: 1, own_repo: 1, low_signal: 1 });
 });
 

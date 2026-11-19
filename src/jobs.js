@@ -28,7 +28,9 @@ import { invalidateContext, reclassifyAll } from './classify.js';
 import { refreshAggregates } from './ingest.js';
 import { invalidateAll } from './cache.js';
 
-export const JOB_TYPES = ['backfill', 'sync', 'reclassify', 'import'];
+export const JOB_TYPES = ['backfill', 'sync', 'reclassify', 'import', 'scores'];
+// After one of these finishes, the private readiness scores (SPEC addendum G) are recomputed.
+const CHANGES_PR_DATA = new Set(['backfill', 'sync', 'reclassify', 'import']);
 const LOG_LINES = 200;
 const LAZY = new Set(['backfill', 'sync']);
 
@@ -63,6 +65,7 @@ async function getHandler(type) {
     if (typeof fn !== 'function') throw new Error(`handler for ${type} is not available: src/jobHandlers.js does not export ${type}()`);
     return fn;
   }
+  if (type === 'scores') return (await import('./scores.js')).scoresJob;
   throw new Error(`no handler registered for job type ${type}`);
 }
 
@@ -139,6 +142,12 @@ async function execute(db, job, { echo = false } = {}) {
   set.finishedAt = new Date();
   await jobs.updateOne({ _id: job._id }, { $set: set });
   invalidateAll(); // cached public responses are stale now
+  if (CHANGES_PR_DATA.has(job.type) && set.status !== 'error') {
+    try {
+      const { afterDataChange } = await import('./scores.js');
+      await afterDataChange(db, job, { enqueue });
+    } catch { /* the scores are private and optional: never fail a fetch over them */ }
+  }
   return jobs.findOne({ _id: job._id });
 }
 

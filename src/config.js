@@ -42,6 +42,18 @@ export function adminProblem({ production, adminPassword, sessionSecret, session
   return '';
 }
 
+/**
+ * Why the private owner page (SPEC addendum G) must stay closed, or '' when its password is acceptable.
+ * It is a second, separate secret: at least 16 characters in every environment, and never the admin password.
+ */
+export function ownerProblem({ ownerPassword, adminPassword }) {
+  if (!ownerPassword) return 'the private page is not configured (OWNER_PASSWORD is unset)';
+  if (PLACEHOLDER.test(ownerPassword)) return 'the private page is not configured (OWNER_PASSWORD is still a placeholder)';
+  if (ownerPassword.length < 16) return 'the private page is not configured (OWNER_PASSWORD must be at least 16 characters)';
+  if (ownerPassword === adminPassword) return 'the private page is not configured (OWNER_PASSWORD must differ from ADMIN_PASSWORD)';
+  return '';
+}
+
 export function loadConfig(env = process.env) {
   const nodeEnv = env.NODE_ENV || 'development';
   const production = nodeEnv === 'production';
@@ -50,6 +62,9 @@ export function loadConfig(env = process.env) {
     mongoUri: env.MONGODB_URI || 'mongodb://localhost:27017',
     mongoDb: env.MONGODB_DB || 'oss_status',
     adminPassword: env.ADMIN_PASSWORD || '',
+    // second password of the private "Krushn's dashboard" page; the page answers 503 while it is unset or weak
+    ownerPassword: env.OWNER_PASSWORD || '',
+    ownerTitle: env.OWNER_TITLE || "Krushn's dashboard",
     // Random per process in dev: sessions do not survive a restart unless SESSION_SECRET is set.
     sessionSecret: env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
     sessionSecretSet: Boolean(env.SESSION_SECRET),
@@ -71,6 +86,7 @@ export function loadConfig(env = process.env) {
     schedulerEnabled: env.SCHEDULER !== 'off',
   };
   cfg.adminProblem = adminProblem(cfg);
+  cfg.ownerProblem = ownerProblem(cfg);
   return cfg;
 }
 
