@@ -166,7 +166,7 @@ visible only in the admin area.
 | Undo any of those | Overrides: list of all current overrides |
 | Change thresholds and keyword lists | Rules: star thresholds, NST orgs and keywords, practice repos and keywords, always-allowed orgs. Saving queues a reclassify job |
 | See, start, pause or cancel fetch runs | Jobs, "Scheduled fetch": next run, Fetch now, Full refresh, Pause / Resume, Settings (time, weekly full refresh), Cancel running fetch, recent runs. Below it: status and log of every job, sync selected students, reclassify |
-| Change the academic year | Rules, "Academic year": label, first and last day. It is the default date range of every public page and moves on by itself each 1 July |
+| Change the academic year | Rules, "Academic year": label, first and last day. It is the default date range of every public page and moves on by itself each 1 July. A year that starts after the current one ends is a new year (the old one stays as an earlier range); any other edit corrects the current year. Earlier ranges can be removed there |
 
 The note typed with a decision is private: the public site shows that an admin decision exists, never its reason.
 

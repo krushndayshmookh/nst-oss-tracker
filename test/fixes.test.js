@@ -437,10 +437,12 @@ test('public API: identical queries are served from memory for 60 s and dropped 
     await app.login();
     assert.equal((await app.post('/api/admin/students', { username: 'newbie', campus: 'RU', batch: 2026 })).status, 201);
     app.clearCookie();
+    // adding a student queues a backfill: wait for it, a job that ends while a response is being computed keeps that
+    // response out of the cache (it may predate the job's writes)
+    await whenIdle(db);
     assert.deepEqual(await merged(), ['miss', 0]);
     assert.deepEqual(await merged(), ['hit', 0]);
     // so does the end of a job
-    await whenIdle(db);
     await collections(db).prs.updateOne({ number: 1 }, { $set: { category: 'open_source', tier: 'major' } });
     assert.deepEqual(await merged(), ['hit', 0]);
     await enqueue(db, 'reclassify', {});

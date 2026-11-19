@@ -5,11 +5,11 @@ import { ApiError, badRequest, notFound } from '../auth.js';
 import { CAMPUSES, CATEGORIES, YEAR_LABELS, invalidateContext, reclassify } from '../classify.js';
 import { emptyStudentStats, refreshAggregates } from '../ingest.js';
 import { loadRules, saveRules, validateRules } from '../rules.js';
-import { JOB_TYPES, activeSync, cancelJob, enqueue } from '../jobs.js';
+import { JOB_TYPES, activeSync, cancelJob, enqueue, syncLock } from '../jobs.js';
 import { csvLine, parseCsv } from '../csv.js';
 import { invalidateAll } from '../cache.js';
 import { allOf } from '../ranged.js';
-import { loadAcademicYear, saveAcademicYear, validateAcademicYear } from '../dates.js';
+import { loadAcademicYear, saveAcademicYear, validateAcademicYear, validateAcademicYearHistory } from '../dates.js';
 import { ensureSchedule, parseUntil, pauseSchedule, resumeSchedule, scheduleOut, updateSchedule, validateSchedule } from '../scheduler.js';
 import {
   COLLATION, MISSING_FILTERS, MISSING_KEYS, adminStudentOut, cohortFilter, contains, findStudent, flag, intParam, jobOut, lc, missingOf, oneOf,
@@ -114,7 +114,7 @@ export function adminRouter({ db, config, auth, github = null }) {
   // logged-in admin and only when the write succeeded: a request that was refused (no session, no CSRF header, wrong
   // password, validation error) changed nothing, and must not let an anonymous client keep the public cache empty.
   r.use((req, res, next) => {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) res.on('finish', () => { if (res.statusCode < 400) invalidateAll(); });
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) res.on('finish', () => { if (res.statusCode < 400 || res.statusCode >= 500) invalidateAll(); }); // 5xx: may have written part of it
     next();
   });
 
@@ -520,7 +520,6 @@ export function adminRouter({ db, config, auth, github = null }) {
     res.json({ job: jobOut(job, true) });
   });
 
-  let triggerLock = Promise.resolve();
   r.post('/jobs/sync', async (req, res) => {
     const params = { trigger: 'manual' };
     if (req.body.users !== undefined && req.body.users !== null) {
@@ -533,13 +532,14 @@ export function adminRouter({ db, config, auth, github = null }) {
     if (req.body.batch !== undefined && req.body.batch !== null && req.body.batch !== '') params.batch = parseBatch(req.body.batch);
     // one sync at a time: a second one would fetch the same students again. The check and the enqueue run one request
     // at a time (replicas: 1), so two "Fetch now" clicks that arrive together cannot both pass.
-    const job = await (triggerLock = triggerLock.catch(() => {}).then(async () => {
+    // The lock is shared with the scheduler (jobs.syncLock), so a scheduled run and "Fetch now" cannot both pass either.
+    const job = await syncLock(db, async () => {
       const running = await activeSync(db);
       if (running) throw new ApiError(409, 'conflict', `a sync is already ${running.status} (job ${running._id})`, { jobId: running._id });
       const schedule = await ensureSchedule(db, { tz, concurrency: config.syncConcurrency });
       params.concurrency = schedule.concurrency;
       return enqueue(db, 'sync', params);
-    }));
+    });
     res.status(202).json({ job: { id: job._id } });
   });
 
@@ -600,7 +600,13 @@ export function adminRouter({ db, config, auth, github = null }) {
   r.put('/academic-year', async (req, res) => {
     const { value, error } = validateAcademicYear(req.body);
     if (error) throw badRequest(error);
-    res.json({ academicYear: await saveAcademicYear(db, value, new Date(), tz) });
+    let history;
+    if (req.body.history !== undefined) {
+      const h = validateAcademicYearHistory(req.body.history, value);
+      if (h.error) throw badRequest(h.error);
+      history = h.value;
+    }
+    res.json({ academicYear: await saveAcademicYear(db, value, new Date(), tz, { history }) });
   });
 
   r.post('/jobs/reclassify', async (req, res) => {

@@ -117,7 +117,7 @@ test('startScheduler: the first tick on boot is the catch-up, exactly one run fo
     assert.equal(lines.length, 1);
     assert.match(lines[0], /started sync job .* \(catchup\)/);
     const s = await loadSchedule(db);
-    assert.ok(s.nextRunAt > new Date() && s.nextRunAt.getTime() - Date.now() <= 86400000, 'next run within a day');
+    assert.ok(s.nextRunAt > new Date() && s.nextRunAt.getTime() - Date.now() <= 30 * 3600000, 'next run within a day (plus the 6 hour gap after a catch-up)');
     sched.stop();
     // the result of the run is copied to the schedule by a later tick
     await tick(db, {});

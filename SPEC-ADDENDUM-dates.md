@@ -127,3 +127,89 @@ Campuses differ a lot in size (RU ~1,500 tracked students, SMRU ~50), so raw sid
   marked "not open source" has its "Not open source" button disabled+greyed ("Already marked not open source"); one explicitly marked
   "open source" has that button greyed; "Reset to rule" appears only when an explicit mark exists. Show "by rule"/"by admin" (and, when the
   PR's category comes from its repo/org decision, "via repo"/"via org" with a link to that row). Buttons update immediately after a click.
+- "Mix" bars (students list, and anywhere the stacked category bar appears: profiles, repos, orgs, admin lists): hovering or keyboard-focusing
+  the bar (and tapping it on touch screens) opens a popover with the breakdown for the ACTIVE date range: one row per category with its colour
+  swatch, label, count and share ("Open source · 12 · 40%"), merged count for open source, and the total; categories with 0 omitted; ordered
+  as in the bar. The bar gets `tabindex=0`, `role="img"` with an `aria-label` carrying the same text, and the popover is positioned to stay
+  inside the viewport (flips above/below; on 375px it becomes a small sheet). Implement once as a shared helper in public/js/lib/ui.js
+  (`mixBar(byCategory, {merged})`) and use it everywhere instead of per-page copies. Also add a compact legend for the bar colours above
+  any table that shows a Mix column.
+
+# SPEC addendum F — public "Campuses" tab (Krushn, 19 Nov 2026)
+New nav item **Campuses** (`#/campuses`) and a campus page (`#/campuses/:campus`). Respects the global date range. Rates use addendum D
+(per 100 tracked students; cohort sizes always shown; small-cohort marker < 30).
+- `#/campuses` comparison page:
+  1. Scorecard row: one card per campus (ADYPU, RU, SVYASA, SMRU): tracked students, % with a merged OS PR, merged OS PRs per 100 students,
+     merged in major projects, change vs the previous equal-length period (▲/▼).
+  2. Comparison table campus × year (rows grouped by campus, subtotal per campus): students, with any PR, with OS PR, with merged OS PR (+%),
+     OS PRs, merged OS PRs (+ per 100), major merged; sortable; raw/rate toggle; CSV export.
+  3. Charts (each with the Per 100 | Share active | Raw toggle): monthly merged OS PRs by campus (lines); participation funnel per campus
+     (tracked → any PR → OS PR → merged OS → major merged, as % of tracked); tier mix per campus (major/established/emerging, 100% stacked);
+     category mix per campus (100% stacked, shows how much work is own-repo / internal vs real OS); year-wise bars within each campus.
+  4. Distribution: per campus, how concentrated the work is — share of merged OS PRs from the top 10% of students, median merged OS PRs
+     among contributors, count of students with 1 / 2-4 / 5-9 / 10+ merged OS PRs.
+  5. Top 5 orgs and top 5 repos per campus (side by side), and orgs shared by ≥2 campuses.
+- `#/campuses/:campus` page: the same blocks for one campus plus year-wise breakdown, activity strip (monthly + weekday + calendar heatmap),
+  top 20 students, top repos/orgs, link to the students list filtered to that campus. Linked from every campus name across the site.
+- API: `GET /api/campuses` (extended: rows + per-campus totals + rates + previous-period deltas + distribution buckets + tier/category mix),
+  `GET /api/campuses/:campus` (profile blocks above). Same range/caching/latency rules as addendum A (≤ 700 ms cold).
+- 'Unknown' campus is listed last and excluded from charts by default (toggle to include).
+- Tests: subtotals equal sums of rows; campus totals equal overview totals for the same range; rates/denominators; delta vs previous period;
+  distribution buckets sum to contributors.
+
+# SPEC addendum G — "Krushn's dashboard": private program-readiness scores (Krushn, 19 Nov 2026)
+Goal of the whole product: know how many students, and who, stand a real chance of selection in GSoC and other prestigious open-source
+programs (Outreachy, LFX Mentorship, Processing Foundation fellowships, Summer of Bitcoin, MLH Fellowship, …).
+
+## G1. Access
+- Link "Krushn's dashboard" in the admin top bar (visible to any logged-in admin). Opening it ALWAYS asks for a second password
+  (`OWNER_PASSWORD`, separate secret, ≥ 16 chars; 503 if unset). Separate httpOnly cookie `oss_owner` (HMAC, 2 h expiry, path /api/owner),
+  requires a valid admin session too; same rate limiting / constant-time compare / CSRF header as admin login; explicit "Lock" button.
+- All data under `/api/owner/*`; nothing from this addendum is reachable with only the admin cookie or publicly; responses `no-store`;
+  never cached in the shared public cache; scores are never written into public collections' public fields or exports.
+- Frontend code for the page is a separate module loaded only after unlock (`public/js/owner/*`); it contains no data.
+
+## G2. Programs (config, editable on the private page; stored in `settings` `_id:'programs'`)
+Each program: `{ key, name, enabled, orgs:[logins], repos:[owner/name], orgSource?:'gsoc-<year>'|'manual', window:{from,to} (contribution
+period that matters, e.g. GSoC 2027: 2026-09-01 → 2027-04-08), weights:{…}, notes, eligibilityNote }`.
+Seeded programs: `gsoc` (GSoC 2027), `outreachy`, `lfx` (LFX Mentorship), `processing` (Processing Foundation: processing/*, p5.js),
+`sob` (Summer of Bitcoin), `mlh` (MLH Fellowship), plus `other-major` (any major-tier open-source project) as a general signal.
+- Org lists: `scripts/fetch_program_orgs.js` pulls the GSoC organisation list for a year from the public GSoC API and maps each org to its
+  GitHub org login(s) (from the org's source/website links; unmatched ones listed for manual mapping); other programs start from a curated
+  seed list in `config/programs.seed.json` that the owner can edit in the UI. A collection `program_orgs` keeps `{program, year, name, logins, url}`.
+
+## G3. Score (transparent heuristic, NOT a calibrated probability — say so on the page)
+Per student × program, computed from PRs in the program's orgs/repos (category open_source or allow-listed), inside the program window and
+before it, into features, each 0..1, then a weighted sum mapped to 0–100 and a band (Strong / Possible / Early / No signal):
+- depth: merged PRs in the student's BEST single program org (saturating, e.g. 1→.25, 3→.6, 6→.85, 10+→1) — selection is per org, so
+  concentration in one org matters more than spread;
+- substance: share of merged PRs that are non-trivial (additions+deletions ≥ 30 and changedFiles ≥ 2, excluding docs/typo-only by title
+  heuristics) and median size;
+- sustained: distinct active weeks in that org in the window, and tenure (first→last PR span);
+- recency: activity in the last 45 days (decays);
+- engagement: review rounds/comments on their PRs (maintainer interaction), merge ratio;
+- breadth (small weight): other program orgs touched;
+- track record: merged PRs in major-tier projects overall.
+Output per student×program: `{score, band, bestOrg, features:{…}, evidence:[top PR urls], blockers:[e.g. "no merged PR in a GSoC org",
+"all activity older than 90 days", "only docs-size PRs"], nextStep}`. Weights and band thresholds are editable; every score shows its
+breakdown ("why"). An overall `prestigeScore` = max over enabled prestigious programs.
+- Calibration: optional upload of past outcomes (`{username, program, year, org, selected}`), e.g. NST's GSoC 2025/2026 results; the page then
+  shows, per band, how many past applicants were selected, and can display an estimated selection rate per band ("of 14 past students in
+  band Strong, 5 were selected"). Until outcomes exist the page labels numbers "readiness score", never "probability".
+- Eligibility caveats shown, never inferred: Outreachy has applicant eligibility criteria the data cannot see; GSoC requires 18+ and
+  open-source-beginner status. The app must not infer gender or any protected attribute.
+
+## G4. Page
+- Summary: per program, counts by band, by campus and year (with per-100 rates), trend vs 30 days ago; "students with a real chance" =
+  band Strong or Possible in ≥ 1 prestigious program.
+- Table: student, campus, year, best program, score per program (heat cells), best org, last activity, blockers; filters campus/year/
+  program/band/org; search; sort by any score; CSV export (private).
+- Student drawer: score breakdown per program, evidence PRs, timeline in the program window, next-step suggestion, free-text private note
+  and a manual flag (Shortlist / Watch / Not applying) stored in a private collection `owner_notes`.
+- Org view: for each program org, which NST students are active there (so mentors can avoid 10 students crowding one org).
+- Settings: programs, org lists, windows, weights, thresholds, outcome upload, recompute.
+- Scores recompute after each sync and on settings change (job type `scores`), stored in private collection `program_scores`.
+
+## G5. Tests
+Access (no owner cookie ⇒ 401 even with admin cookie; public/admin endpoints never include scores), scoring features on fixtures,
+window boundaries in IST, band thresholds, recompute idempotent, org mapping, CSV private.

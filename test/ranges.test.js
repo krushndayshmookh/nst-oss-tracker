@@ -219,14 +219,18 @@ test('ranges: IST boundaries, opened vs merged in range, default = academic year
     const today = zoned(new Date()).ymd;
     const custom = { label: 'Term A', start: '2026-08-01', end: today > '2027-03-31' ? today : '2027-03-31' };
     const put = await app.put('/api/admin/academic-year', custom);
-    assert.deepEqual([put.status, put.body.academicYear.current, put.body.academicYear.history[0].label], [200, custom, cur.label]);
+    // Term A overlaps the year it replaces: that is a correction of the current year, not a new year, so the replaced
+    // one does not become a preset (see "academic year: a correction ..." in test/review2.test.js)
+    const before = meta.academicYear.history.map((a) => a.label);
+    assert.deepEqual([put.status, put.body.academicYear.current, put.body.academicYear.history.map((a) => a.label)], [200, custom, before]);
     assert.deepEqual((await get('/api/admin/academic-year')).academicYear.current, custom);
     app.clearCookie();
     const moved = await get('/api/overview');
     assert.deepEqual([moved.range.label, moved.range.from, moved.prs.total, moved.prs.merged], ['AY Term A', '2026-08-01', 2, 0], 'only #4 and #6 were opened in the new year, nothing merged');
     const meta2 = await get('/api/meta');
-    assert.deepEqual(meta2.presets.slice(0, 2).map((p) => [p.key, p.label]), [['ay', 'AY Term A'], [`ay-${cur.label}`, `AY ${cur.label}`]]);
-    assert.equal((await get(`/api/overview?range=ay-${cur.label}`)).range.from, cur.start, 'the previous year stays reachable as a preset');
+    assert.deepEqual(meta2.presets.slice(0, 2).map((p) => [p.key, p.label]), [['ay', 'AY Term A'], [`ay-${before[0]}`, `AY ${before[0]}`]]);
+    assert.equal((await app.get(`/api/overview?range=ay-${cur.label}`)).status, 400, 'the replaced year is not a preset');
+    assert.equal((await get(`/api/overview?range=ay-${before[0]}`)).range.to, '2026-06-30', 'the year before stays reachable as a preset');
     assert.equal((await get('/api/students')).range.label, 'AY Term A');
   } finally { await app.close(); }
 });
@@ -338,7 +342,8 @@ test('scheduler: fires once at the right IST time, not while paused, auto-resume
     const resumed = await tick(db, at('2026-11-22T18:30:10Z'));
     assert.equal(resumed.why, 'catchup', 'auto-resume at pausedUntil');
     s = await loadSchedule(db);
-    assert.deepEqual([s.paused, s.pausedUntil, s.pauseNote, s.nextRunAt.toISOString()], [false, null, '', '2026-11-22T21:00:00.000Z']);
+    assert.deepEqual([s.paused, s.pausedUntil, s.pauseNote, s.nextRunAt.toISOString()], [false, null, '', '2026-11-23T21:00:00.000Z'],
+      'the slot 2.5 hours after the catch-up is skipped: one run, not two back to back');
     assert.equal((await tick(db, at('2026-11-22T18:30:40Z'))).fired, null, 'never more than once');
     await whenIdle(db);
     assert.equal(runs.length, 2);

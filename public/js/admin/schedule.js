@@ -410,8 +410,9 @@ export function scheduledFetch({ onChange = () => {}, showLog = null } = {}) {
 
 /**
  * "Academic year" card of the Rules page (SPEC addendum A1): the default date range of every public page.
- * Saving with the same label corrects the dates of the current year; a new label starts a new year and keeps the
- * old one as an earlier range. Validation mirrors the server: label required, first day before last day, at most 400 days.
+ * A year that starts after the current one ends is a new year: the old one stays available as an earlier range.
+ * Anything else (a fixed label, moved dates) corrects the current year and leaves no trace. Earlier years can be
+ * removed one by one. Validation mirrors the server: label required, first day before last day, at most 400 days.
  */
 export async function academicYearCard() {
   const { academicYear } = await api.get('/admin/academic-year');
@@ -422,11 +423,27 @@ export async function academicYearCard() {
   const save = h('button', { type: 'submit', class: 'btn', name: 'save-academic-year', disabled: true }, 'Save academic year');
   const effect = h('span', { class: 'muted', 'aria-live': 'polite' }, 'No unsaved changes.');
   const now = h('p', null);
-  const history = h('p', { class: 'muted' });
+  const history = h('div', { class: 'stack' });
+  let past = academicYear.history;
+  const removeEarlier = async (a, button) => {
+    const ok = await confirmDialog(`Remove AY ${a.label} (${fmt.range(a.start, a.end)}) from the ranges offered on the public pages? The data is not touched; links that use this range by name stop working.`,
+      { confirmLabel: 'Remove range', danger: true, title: `Remove AY ${a.label}` });
+    if (!ok) return;
+    const res = await act(() => api.put('/admin/academic-year', { ...cur, history: past.filter((x) => x.label !== a.label) }), { button });
+    if (!res) return;
+    drawFacts(res.academicYear);
+    toast(`Removed AY ${a.label} from the earlier ranges.`);
+  };
   const days = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000) + 1;
   const drawFacts = (ay) => {
     now.replaceChildren('Public pages open on ', h('strong', null, `AY ${ay.current.label}`), ` (${fmt.range(ay.current.start, ay.current.end)}, ${fmt.num(days(ay.current.start, ay.current.end))} days), unless a visitor picks another range.`);
-    history.textContent = ay.history.length ? `Earlier years offered as ranges: ${ay.history.map((a) => `${a.label} (${fmt.range(a.start, a.end)})`).join('; ')}.` : 'No earlier years yet.';
+    past = ay.history;
+    history.replaceChildren(h('p', { class: 'muted' }, past.length ? 'Earlier years offered as ranges on the public pages:' : 'No earlier years yet.'),
+      ...(past.length ? [h('ul', { class: 'ay-history' }, past.map((a) => {
+        const remove = h('button', { type: 'button', class: 'btn btn-sm btn-quiet', 'aria-label': `Remove AY ${a.label}` }, 'Remove');
+        remove.addEventListener('click', () => removeEarlier(a, remove));
+        return h('li', null, h('span', null, `AY ${a.label} (${fmt.range(a.start, a.end)}) `), remove);
+      }))] : []));
   };
   drawFacts(academicYear);
   const dirty = () => label.get() !== cur.label || start.get() !== cur.start || end.get() !== cur.end;
@@ -434,8 +451,8 @@ export async function academicYearCard() {
     for (const f of [label, start, end]) f.setError(null);
     save.disabled = !dirty();
     effect.textContent = !dirty() ? 'No unsaved changes.'
-      : label.get() && label.get() !== cur.label ? `Saving starts a new year “${label.get()}”. ${cur.label} stays available as an earlier range.`
-        : `Saving corrects the dates of ${cur.label}.`;
+      : start.get() && start.get() > cur.end ? `Saving starts a new year “${label.get() || '…'}”. ${cur.label} stays available as an earlier range.`
+        : `Saving corrects the current year (${cur.label}); nothing is added to the earlier ranges.`;
   };
   const form = h('form', { class: 'stack', novalidate: true },
     now,

@@ -674,3 +674,7 @@ dialog.dialog::backdrop { background: rgb(8 20 17 / 0.5); }
   .table-wrap { overflow: visible; border: 0; }
   .card { break-inside: avoid; }
 }
+
+/* Admin → Rules → Academic year: earlier years, each with a Remove button */
+.ay-history { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ay-history li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

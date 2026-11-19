@@ -120,12 +120,40 @@ export function validateAcademicYear(body) {
   return { value: { label, start: body.start, end: body.end } };
 }
 
-/** Sets the current academic year; the previous one moves to the history. */
-export async function saveAcademicYear(db, value, now = new Date(), tz = TZ) {
+/** Validates the optional `history` of PUT /api/admin/academic-year (earlier years offered as presets): -> { value } | { error }. */
+export function validateAcademicYearHistory(list, current) {
+  if (!Array.isArray(list)) return { error: 'history must be a list of { label, start, end }' };
+  if (list.length > 10) return { error: 'history holds at most 10 academic years' };
+  const out = [];
+  const labels = new Set([current.label]);
+  for (const item of list) {
+    const { value, error } = validateAcademicYear(item);
+    if (error) return { error: `history: ${error}` };
+    if (labels.has(value.label)) return { error: `history: the label ${value.label} is used twice` };
+    labels.add(value.label);
+    out.push(value);
+  }
+  return { value: out };
+}
+
+/**
+ * Sets the current academic year.
+ * The previous one moves to the history only when the new year comes AFTER it (starts after it ends): that is a new
+ * year. Anything else (a fixed label, a moved start or end date, trying a year and going back) is a correction of the
+ * current year and replaces it, so a typo never becomes a permanent public preset. `history` (already validated)
+ * replaces the stored history outright, which is how an admin removes an entry.
+ */
+export async function saveAcademicYear(db, value, now = new Date(), tz = TZ, { history = undefined } = {}) {
   const { settings } = collections(db);
   const before = await loadAcademicYear(db, now, tz);
-  const history = [before.current, ...before.history].filter((a) => a.label !== value.label);
-  await settings.updateOne({ _id: 'academicYear' }, { $set: { current: value, history: history.slice(0, 10), updatedAt: now } }, { upsert: true });
+  let past = history;
+  if (!past) {
+    const isNewYear = value.start > before.current.end;
+    past = isNewYear ? [before.current, ...before.history] : before.history;
+  }
+  // the current year is not also a preset of the past: neither under its label nor under its exact dates
+  past = past.filter((a) => a.label !== value.label && !(a.start === value.start && a.end === value.end));
+  await settings.updateOne({ _id: 'academicYear' }, { $set: { current: value, history: past.slice(0, 10), updatedAt: now } }, { upsert: true });
   return loadAcademicYear(db, now, tz);
 }
 

@@ -24,7 +24,8 @@
 // Built-in handlers: `reclassify` (classify.reclassifyAll). `import` is registered by scripts/import_legacy.js.
 import crypto from 'node:crypto';
 import { collections } from './db.js';
-import { reclassifyAll } from './classify.js';
+import { invalidateContext, reclassifyAll } from './classify.js';
+import { refreshAggregates } from './ingest.js';
 import { invalidateAll } from './cache.js';
 
 export const JOB_TYPES = ['backfill', 'sync', 'reclassify', 'import'];
@@ -167,6 +168,18 @@ function pump(db) {
   return p;
 }
 
+const syncLocks = new WeakMap(); // db -> tail of the chain
+
+/**
+ * Runs `fn` alone per database: "is a sync active?" and "enqueue one" must happen as one step, for the admin's
+ * "Fetch now" and for the scheduler alike (replicas: 1, so an in-process lock is enough). -> whatever `fn` returns.
+ */
+export function syncLock(db, fn) {
+  const run = (syncLocks.get(db) || Promise.resolve()).then(fn);
+  syncLocks.set(db, run.catch(() => {}));
+  return run;
+}
+
 /** Queues a job for the in-process runner and returns the job doc (status `queued`). */
 export async function enqueue(db, type, params = {}) {
   if (!JOB_TYPES.includes(type)) throw new Error(`unknown job type ${type}`);
@@ -205,6 +218,10 @@ export async function runInline(db, type, params = {}, { echo = true } = {}) {
 /** Call once on boot: marks interrupted app jobs as failed and resumes queued ones. */
 export async function startRunner(db) {
   // a job that was being cancelled when the process went down is cancelled, not "interrupted": the scheduler must not start it again
+  // A fetch that died with the process saved PRs student by student but never reached its closing refresh of the
+  // precomputed all-time stats. Nothing else is certain to run soon (recovery needs an enabled, unpaused schedule), so
+  // the stats are refreshed here: otherwise `range=all` and the admin queues disagree with every ranged page.
+  const cutFetch = await collections(db).jobs.countDocuments({ runner: 'app', status: 'running', type: { $in: ['sync', 'backfill'] } });
   await collections(db).jobs.updateMany(
     { runner: 'app', status: 'running', cancelRequested: true },
     { $set: { status: 'cancelled', error: null, finishedAt: new Date() } },
@@ -213,6 +230,15 @@ export async function startRunner(db) {
     { runner: 'app', status: 'running' },
     { $set: { status: 'error', error: 'interrupted', finishedAt: new Date() } },
   );
+  if (cutFetch) {
+    try {
+      invalidateContext();
+      await refreshAggregates(db);
+      invalidateAll();
+    } catch (e) {
+      if (process.env.NODE_ENV !== 'test') console.error('could not refresh the statistics after an interrupted fetch:', e?.message || e);
+    }
+  }
   // `cli` jobs are not managed by the app, but one that was killed hard (SIGKILL, node crash) can never finish:
   // anything still `running` long after the CronJob deadline (3 h) is marked failed so the Jobs page stays truthful.
   await collections(db).jobs.updateMany(
