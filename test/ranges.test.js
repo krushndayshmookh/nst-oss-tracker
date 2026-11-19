@@ -771,6 +771,7 @@ test('ranged responses are cached for identical queries and dropped on an admin 
     assert.equal((await app.get('/api/campuses')).body.total.osMerged, 1, 'a new query still reuses the per-student numbers aggregated for the range');
     await app.login();
     assert.equal((await app.post('/api/admin/students', { username: 'newbie', campus: 'RU', batch: 2026 })).status, 201);
+    await whenIdle(db); // the backfill this queues (and anything it triggers) clears the cache again when it ends
     app.clearCookie();
     for (const p of ['/api/overview', '/api/activity', '/api/students', '/api/overview?range=30d']) assert.deepEqual(await read(p), ['miss', 0], `${p} after an admin write`);
     assert.equal((await app.get('/api/campuses')).body.total.osMerged, 0);

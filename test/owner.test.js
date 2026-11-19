@@ -427,7 +427,7 @@ test('programs: defaults, seed on first boot, validation', async () => {
 
 test('owner password: unset, short, placeholder or equal to the admin password keeps the page closed', () => {
   assert.match(ownerProblem({ ownerPassword: '', adminPassword: 'x' }), /OWNER_PASSWORD is unset/);
-  assert.match(ownerProblem({ ownerPassword: 'short-password', adminPassword: 'x' }), /at least 16 characters/);
+  assert.equal(ownerProblem({ ownerPassword: 'short-password', adminPassword: 'x' }), '');   // no minimum length (owner's decision)
   assert.match(ownerProblem({ ownerPassword: 'CHANGE-ME-CHANGE-ME-CHANGE-ME', adminPassword: 'x' }), /placeholder/);
   assert.match(ownerProblem({ ownerPassword: 'the very same long password', adminPassword: 'the very same long password' }), /must differ from ADMIN_PASSWORD/);
   assert.equal(ownerProblem({ ownerPassword: OWNER_PASSWORD, adminPassword: TEST_PASSWORD }), '');
@@ -580,7 +580,7 @@ test('owner access: 401 without the owner cookie even for a logged-in admin; sec
 
 test('owner access: 503 while OWNER_PASSWORD is unset or weak; 10 wrong passwords lock the visitor out for 15 minutes', async () => {
   const db = await freshDb();
-  for (const ownerPassword of ['', 'too short', TEST_PASSWORD]) {
+  for (const ownerPassword of ['', TEST_PASSWORD]) {
     const app = await startApp(db, { ownerPassword });
     try {
       await app.login();

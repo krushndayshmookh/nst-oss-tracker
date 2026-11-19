@@ -514,3 +514,5 @@ a program, then `"calibrated"` (the UI may then ALSO show the per-band past sele
 // username,name,campus,batch,year,prestige_score,best_program,best_band,best_org,real_chance,flag,last_activity_at,
 // <key>_score,<key>_band,<key>_best_org,<key>_delta   (repeated per enabled program; "-" in a key becomes "_"),blockers
 ```
+
+- DECISION (Krushn, 19 Nov 2026): no minimum length is enforced for OWNER_PASSWORD (remove the >= 16 rule in G1). Keep: non-empty, not a placeholder, different from ADMIN_PASSWORD, rate-limited login. Do not reintroduce the length check.

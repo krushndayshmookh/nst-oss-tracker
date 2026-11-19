@@ -126,7 +126,7 @@ function draw() {
     ghLink(s.username, `@${s.username}`),
     h('a', { href: profileUrl(s.username), target: '_blank', rel: 'noopener', class: 'ext' }, 'Public profile'));
 
-  c.body.replaceChildren(
+  c.body.replaceChildren(...[
     noteSection(c, s, note),
     h('section', { class: 'drawer-section' },
       h('h3', null, 'Readiness score per program'),
@@ -138,7 +138,7 @@ function draw() {
     outcomes && outcomes.length ? h('section', { class: 'drawer-section' },
       h('h3', null, 'Past program results (uploaded by you)'),
       h('ul', { class: 'od-blockers' }, outcomes.map((o) => h('li', null,
-        `${(cfg.programs.find((p) => p.key === o.program) || {}).name || o.program} ${o.year}${o.org ? `, ${o.org}` : ''}: `, h('b', null, o.selected ? 'selected' : 'applied, not selected'))))) : null);
+        `${(cfg.programs.find((p) => p.key === o.program) || {}).name || o.program} ${o.year}${o.org ? `, ${o.org}` : ''}: `, h('b', null, o.selected ? 'selected' : 'applied, not selected'))))) : null].filter(Boolean));
 }
 
 function noteSection(c, s, note) {

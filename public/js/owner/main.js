@@ -88,7 +88,7 @@ async function renderUnlock(el) {
   }
   if (me.configured === false) {
     box.append(h('div', { class: 'notice notice-warn', role: 'alert' },
-      'This page is not set up on this server. Set OWNER_PASSWORD (at least 16 characters, different from the admin password) and restart.'));
+      'This page is not set up on this server. Set OWNER_PASSWORD (different from the admin password) and restart.'));
     return;
   }
 

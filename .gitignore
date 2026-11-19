@@ -8,3 +8,4 @@ data/
 .admin-password
 *.log
 .DS_Store
+.owner-password

@@ -44,12 +44,12 @@ export function adminProblem({ production, adminPassword, sessionSecret, session
 
 /**
  * Why the private owner page (SPEC addendum G) must stay closed, or '' when its password is acceptable.
- * It is a second, separate secret: at least 16 characters in every environment, and never the admin password.
+ * It is a second, separate secret, never the admin password. No minimum length is enforced (owner's decision, 19 Nov 2026);
+ * the login rate limit is what protects a short password.
  */
 export function ownerProblem({ ownerPassword, adminPassword }) {
   if (!ownerPassword) return 'the private page is not configured (OWNER_PASSWORD is unset)';
   if (PLACEHOLDER.test(ownerPassword)) return 'the private page is not configured (OWNER_PASSWORD is still a placeholder)';
-  if (ownerPassword.length < 16) return 'the private page is not configured (OWNER_PASSWORD must be at least 16 characters)';
   if (ownerPassword === adminPassword) return 'the private page is not configured (OWNER_PASSWORD must differ from ADMIN_PASSWORD)';
   return '';
 }

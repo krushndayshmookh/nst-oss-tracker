@@ -27,7 +27,7 @@ All configuration is by environment variable. `.env.example` lists every variabl
 | `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
 | `MONGODB_DB` | `oss_status` | database name |
 | `ADMIN_PASSWORD` | unset | admin password. While unset, the admin API answers 503. In production it must be at least 16 characters and not a placeholder, or the admin area stays closed (503) |
-| `OWNER_PASSWORD` | unset | second password of the private page "Krushn's dashboard" (see below). At least 16 characters, not a placeholder, different from `ADMIN_PASSWORD`; while unset or weak the page answers 503 |
+| `OWNER_PASSWORD` | unset | second password of the private page "Krushn's dashboard" (see below). Not a placeholder, different from `ADMIN_PASSWORD`; while unset or weak the page answers 503 |
 | `SESSION_SECRET` | random per process | signs the admin cookie (together with the password, so changing the password signs everyone out). In production: required, at least 32 characters |
 | `GITHUB_TOKEN` | unset | needed by sync, backfill and "add student" validation. Public read access is enough |
 | `GITHUB_API_URL` | `https://api.github.com` | optional API base (GraphQL at `<base>/graphql`); for GitHub Enterprise or a local fake server in tests |
