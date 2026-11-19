@@ -19,6 +19,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --chown=node:node src ./src
 COPY --chown=node:node scripts ./scripts
 COPY --chown=node:node public ./public
+# Seed of the private readiness page: program org lists and hand-checked org aliases (src/programs.js reads them at boot).
+COPY --chown=node:node config ./config
 
 # Fail the build if the vendored chart library is missing (the pages must work without external CDNs).
 RUN test -s public/vendor/chart.umd.js

@@ -1,4 +1,4 @@
-# Everything the image does not need. The Dockerfile copies only package*.json, src/, scripts/ and public/.
+# Everything the image does not need. The Dockerfile copies only package*.json, src/, scripts/, public/ and config/.
 .git
 .gitignore
 .dockerignore

@@ -141,12 +141,35 @@ export function cohortTextPast(s) {
   return [cohortText(s), s.batch ? `Batch ${s.batch}` : null].filter(Boolean).join(' · ');
 }
 
+/** A campus name as a link to its page (SPEC addendum F). 'Unknown' and empty stay plain text. */
+export function campusLink(campus, ctx, text = null) {
+  if (!campus) return null;
+  if (campus === 'Unknown') return text || 'Unknown';
+  return h('a', { href: link(`/campuses/${encodeURIComponent(campus)}`, {}, ctx) }, text || campus);
+}
+
+/** ['RU', 'SVYASA'] → linked names separated by commas. → array of nodes, or null for an empty list. */
+export function campusList(list, ctx) {
+  const names = (list || []).filter(Boolean);
+  return names.length ? names.flatMap((c, i) => (i ? [', ', campusLink(c, ctx)] : [campusLink(c, ctx)])) : null;
+}
+
+/** "RU · 2nd year" with the campus linked; unknown parts are left out. → array of nodes, or null. */
+export function cohortNodes(s, ctx, { past = false } = {}) {
+  const parts = [
+    s.campus && s.campus !== 'Unknown' ? campusLink(s.campus, ctx) : null,
+    s.year && s.year !== 'Unknown' ? s.year : null,
+    past && s.batch ? `Batch ${s.batch}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.flatMap((p, i) => (i ? [' · ', p] : [p])) : null;
+}
+
 /** Table cell for a student: name → profile here, GitHub handle underneath. */
 export function studentCell(s, ctx, { sub = 'github', past = false } = {}) {
   return h('div', null,
     h('a', { href: link(`/students/${encodeURIComponent(s.username)}`, {}, ctx) }, studentName(s)),
     sub === 'github' ? h('div', { class: 'sub' }, ghLink(s.username)) : null,
-    sub === 'cohort' && cohortText(s) ? h('div', { class: 'sub' }, past ? cohortTextPast(s) : cohortText(s)) : null);
+    sub === 'cohort' && cohortText(s) ? h('div', { class: 'sub' }, cohortNodes(s, ctx, { past })) : null);
 }
 
 export function repoHref(name, ctx) {
@@ -229,7 +252,7 @@ export function contributorsTable(rows, ctx, { empty = 'No students in this peri
     caption, empty, rows,
     columns: [
       { key: 'name', label: 'Student', render: (s) => studentCell(s, ctx) },
-      { key: 'campus', label: 'Campus' },
+      { key: 'campus', label: 'Campus', render: (r) => campusLink(r.campus, ctx) },
       { key: 'year', label: 'Year', render: (r) => yearLabel(r, past) },
       { key: 'prs', label: 'PRs here', num: true },
       { key: 'merged', label: 'Merged here', num: true },

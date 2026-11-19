@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, statCard, card, pagination, badge, categoryBadge, overrideBadge, calendarHeatmap, fmt, CATEGORY_HELP } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, link, orgHref, prTable, contributorsTable, fetchActivity, activityCard, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, link, orgHref, campusList, prTable, contributorsTable, fetchActivity, activityCard, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -46,7 +46,7 @@ export default async function (el, ctx) {
       why ? h('span', null, why, ' ', h('a', { href: link('/about', {}, ctx) }, 'How this is decided')) : null),
     h('div', { class: 'cards' },
       statCard({ key: true, label: counted ? 'Merged PRs by NST students' : 'Merged PRs (not counted)', value: repo.stats.merged, sub: `of ${fmt.num(repo.stats.prs)} opened` }),
-      statCard({ label: 'Students', value: repo.stats.students, sub: (repo.stats.campuses || []).join(', ') || null }),
+      statCard({ label: 'Students', value: repo.stats.students, sub: campusList(repo.stats.campuses, ctx) }),
       statCard({ label: 'Open now', value: repo.stats.open }),
       statCard({ label: 'Closed without merging', value: repo.stats.closed }),
       statCard({ label: 'First PR', value: fmt.date(repo.stats.firstPrAt), sub: repo.stats.lastPrAt ? `latest ${fmt.rel(repo.stats.lastPrAt)}` : null })),

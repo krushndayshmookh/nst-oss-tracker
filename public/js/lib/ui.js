@@ -297,25 +297,148 @@ export function funnel(steps) {
   }));
 }
 
-/**
- * Category mix as a thin 100% bar: categoryBar(stats.byCategory). `legend: true` adds a labelled key with counts.
- * Segment order and colours are fixed (CATEGORIES), so bars in a column can be compared at a glance.
- */
-export function categoryBar(byCategory, { legend = false, large = false } = {}) {
-  const counts = byCategory || {};
+/* ── category mix bar + popover (SPEC addendum E) ── */
+
+let mixPop = null;      // the one popover element, created on first use
+let mixOwner = null;    // the bar it currently describes
+let mixPinned = false;  // opened by tap / click: stays until dismissed
+
+function mixRows(counts, merged) {
   const total = CATEGORIES.reduce((sum, c) => sum + (Number(counts[c]) || 0), 0);
-  const summary = total
-    ? CATEGORIES.filter((c) => counts[c]).map((c) => `${CATEGORY_LABELS[c]} ${fmt.num(counts[c])}`).join(', ')
-    : 'No pull requests';
-  const bar = h('span', { class: ['mix', large && 'mix-lg'], role: 'img', 'aria-label': summary, title: summary },
-    total ? CATEGORIES.filter((c) => counts[c]).map((c) =>
-      h('span', { class: `cat-${c}`, style: { flex: `${counts[c]} 0 0`, background: 'var(--cat-color)' } })) : null);
+  const rows = CATEGORIES.filter((c) => Number(counts[c]) > 0).map((c) => ({
+    key: c, label: CATEGORY_LABELS[c], count: Number(counts[c]), share: fmt.pct(counts[c], total),
+    merged: c === 'open_source' && merged !== null && merged !== undefined ? Number(merged) : null,
+  }));
+  return { total, rows };
+}
+
+/** "Open source · 12 · 40% (8 merged), Own repo · 18 · 60%. Total 30." — the popover's content as one sentence. */
+function mixText({ total, rows }, period) {
+  if (!total) return `No pull requests${period ? ` in ${period}` : ''}`;
+  const parts = rows.map((r) => `${r.label} · ${fmt.num(r.count)} · ${r.share}${r.merged !== null ? ` (${fmt.num(r.merged)} merged)` : ''}`);
+  return `${parts.join(', ')}. Total ${fmt.num(total)}${period ? `, ${period}` : ''}.`;
+}
+
+function hideMix() {
+  if (!mixPop || mixPop.hidden) return;
+  mixPop.hidden = true;
+  if (mixOwner) mixOwner.removeAttribute('aria-describedby');
+  mixOwner = null;
+  mixPinned = false;
+}
+
+function ensureMixPop() {
+  if (mixPop && mixPop.isConnected) return mixPop;
+  mixPop = h('div', { class: 'mix-pop', id: 'mix-pop', role: 'tooltip', hidden: true });
+  document.body.append(mixPop);
+  // one set of page-level listeners for every bar
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideMix(); });
+  document.addEventListener('pointerdown', (e) => {
+    if (mixOwner && !mixOwner.contains(e.target) && !mixPop.contains(e.target)) hideMix();
+  });
+  window.addEventListener('scroll', hideMix, { passive: true, capture: true });
+  window.addEventListener('resize', hideMix, { passive: true });
+  window.addEventListener('hashchange', hideMix);
+  return mixPop;
+}
+
+function showMix(bar, data, period) {
+  const pop = ensureMixPop();
+  pop.replaceChildren(
+    h('div', { class: 'mix-pop-title' }, 'Pull requests by category'),
+    data.total
+      ? h('table', { class: 'mix-pop-rows' }, h('tbody', null,
+        data.rows.map((r) => h('tr', { class: `cat-${r.key}` },
+          h('th', { scope: 'row' }, h('span', { class: 'swatch', style: { background: 'var(--cat-color)' }, 'aria-hidden': 'true' }), r.label),
+          h('td', { class: 'num' }, fmt.num(r.count)),
+          h('td', { class: 'num muted' }, r.share),
+          h('td', { class: 'mix-pop-merged' }, r.merged !== null ? `${fmt.num(r.merged)} merged` : null))),
+        h('tr', { class: 'mix-pop-total' }, h('th', { scope: 'row' }, 'Total'), h('td', { class: 'num' }, fmt.num(data.total)), h('td'), h('td'))))
+      : h('p', { class: 'muted' }, 'No pull requests.'),
+    period ? h('div', { class: 'mix-pop-period' }, period) : null);
+  pop.hidden = false;
+  mixOwner = bar;
+  bar.setAttribute('aria-describedby', pop.id);
+
+  // On a phone the popover is a sheet along the bottom edge (CSS); otherwise it sits under the bar, or above it
+  // when there is no room below, and never leaves the viewport sideways.
+  const sheet = window.matchMedia && window.matchMedia('(max-width: 480px)').matches;
+  pop.classList.toggle('mix-pop-sheet', sheet);
+  pop.style.left = '';
+  pop.style.top = '';
+  if (sheet) return;
+  const r = bar.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth;
+  const vh = window.innerHeight;
+  const w = pop.offsetWidth;
+  const ph = pop.offsetHeight;
+  const gap = 8;
+  const left = Math.max(8, Math.min(vw - w - 8, r.left + r.width / 2 - w / 2));
+  const below = r.bottom + gap + ph <= vh - 8;
+  const top = below || r.top - gap - ph < 8 ? r.bottom + gap : r.top - gap - ph;
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top = `${Math.round(Math.max(8, Math.min(top, vh - ph - 8)))}px`;
+}
+
+/**
+ * Category mix as a thin 100% bar: mixBar(stats.byCategory, { merged?, period?, legend?, large? }) → Element.
+ * Segment order and colours are fixed (CATEGORIES), so bars in a column can be compared at a glance.
+ * Hovering, keyboard-focusing or tapping the bar opens a popover with one row per category (swatch, label, count,
+ * share; categories with 0 left out), the merged count for open source when `merged` is given, and the total.
+ * The same text is the bar's aria-label. `period` (e.g. "AY 2026-27 · 1 Jul 2026 – 30 Jun 2027") is printed under
+ * the rows. `legend: true` adds a labelled key with counts; `large` is the 14px variant for cards.
+ */
+export function mixBar(byCategory, { merged = null, period = null, legend = false, large = false } = {}) {
+  const counts = byCategory || {};
+  const data = mixRows(counts, merged);
+  const bar = h('span', { class: ['mix', large && 'mix-lg'], role: 'img', tabindex: '0', 'aria-label': mixText(data, period) },
+    data.rows.map((r) => h('span', { class: `cat-${r.key}`, style: { flex: `${r.count} 0 0`, background: 'var(--cat-color)' } })));
+  const open = () => showMix(bar, data, period);
+  bar.addEventListener('mouseenter', () => { if (!mixPinned) open(); });
+  bar.addEventListener('mouseleave', () => { if (mixOwner === bar && !mixPinned) hideMix(); });
+  bar.addEventListener('focus', () => { if (mixOwner !== bar) open(); });
+  bar.addEventListener('blur', () => { if (mixOwner === bar) hideMix(); });
+  // tap (touch has no hover): toggles, and stays open until the next tap anywhere else
+  bar.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (mixOwner === bar && mixPinned) { hideMix(); return; }
+    open();
+    mixPinned = true;
+  });
+  bar.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (mixOwner === bar) hideMix(); else open(); }
+  });
   if (!legend) return bar;
   return h('div', null, bar,
     h('ul', { class: 'legend' }, CATEGORIES.map((c) =>
       h('li', { class: `cat-${c}`, title: CATEGORY_HELP[c] },
         h('span', { class: 'swatch', style: { background: 'var(--cat-color)' }, 'aria-hidden': 'true' }),
         CATEGORY_LABELS[c], ' ', h('b', null, fmt.num(counts[c] || 0))))));
+}
+/** The name used before addendum E; same component. */
+export { mixBar as categoryBar };
+
+/**
+ * Compact key for the colours of mixBar: put it above any table that has a Mix column.
+ * mixLegend({ label? = 'Mix' }) → Element (ul.legend.legend-compact)
+ */
+export function mixLegend({ label = 'Mix' } = {}) {
+  return h('ul', { class: 'legend legend-compact', 'aria-label': 'Colours of the category mix bar' },
+    label ? h('li', { class: 'legend-title' }, `${label}:`) : null,
+    CATEGORIES.map((c) => h('li', { class: `cat-${c}`, title: CATEGORY_HELP[c] },
+      h('span', { class: 'swatch', style: { background: 'var(--cat-color)' }, 'aria-hidden': 'true' }), CATEGORY_LABELS[c])));
+}
+
+/**
+ * A small either/or switch: segmented({ options: [{ value, label, title? }], value, onChange, label, name? }) → Element.
+ * Buttons carry aria-pressed; `name` (default 'seg') prefixes each button's name so the router can give focus back.
+ */
+export function segmented({ options, value, onChange, label = 'View', name = 'seg' }) {
+  return h('div', { class: 'btn-group seg', role: 'group', 'aria-label': label }, options.map((o) => h('button', {
+    type: 'button', name: `${name}-${o.value}`, class: ['btn btn-sm', o.value === value && 'is-on'],
+    'aria-pressed': o.value === value ? 'true' : 'false', title: o.title || null,
+    onClick: () => { if (o.value !== value && onChange) onChange(o.value); },
+  }, o.label)));
 }
 
 /** A number with an in-cell bar scaled to `max`: for the leading metric column of a ranked table. */

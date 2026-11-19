@@ -1,14 +1,44 @@
 // Admin → Pull requests. Search every stored pull request (public GET /prs with category=all) and mark single ones
-// as open source or not.
+// as open source or not. The button for the mark a pull request already has is greyed; a tag says where its category
+// comes from (by rule, by admin, via repo, via org); a click shows on the row at once.
 
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import {
-  h, pageHead, filterBar, table, pagination, card, extLink, ghLink, stateBadge, categoryBadge, overrideBadge, fmt,
+  h, pageHead, filterBar, table, pagination, card, extLink, ghLink, stateBadge, categoryBadge, fmt,
   CATEGORIES, CATEGORY_LABELS, STATE_LABELS,
 } from '../lib/ui.js';
 import { CAMPUSES, YEARS } from './common.js';
-import { decidePr, decisionButtons } from './decisions.js';
+import { onDecision, prSource, sourceTag, prButtons } from './decisions.js';
+
+const MARK_WORD = { open_source: 'Marked open source', not_open_source: 'Marked not open source' };
+
+function prState(p) {
+  const src = prSource(p);
+  const reason = String(p.reason || '');
+  return [
+    categoryBadge(p.category, p.tier), ' ',
+    sourceTag(src, { link: src === 'repo' ? p.repo : src === 'org' ? p.owner : null, note: p.overrideNote }),
+    src === 'admin' ? h('div', { class: 'sub' }, `${MARK_WORD[p.override] || p.override}${p.overrideNote ? `: ${p.overrideNote}` : ''}`) : null,
+    src === 'repo' || src === 'org' ? h('div', { class: 'sub' }, reason.replace(/^admin: /, 'Admin: ')) : null,
+    src === 'rule' && p.category !== 'open_source' && reason ? h('div', { class: 'sub' }, `Not counted: ${reason}`) : null,
+  ];
+}
+
+/** A cell that is drawn again when a decision on its pull request comes back. */
+function liveCell(live, p, render) {
+  const holder = h('div', { class: 'live-cell' }, render(p));
+  const item = live.get(p.url) || { row: p, cells: [] };
+  item.cells.push(() => {
+    const active = document.activeElement;
+    const name = active && holder.contains(active) ? active.getAttribute('name') : null;
+    holder.replaceChildren(render(p));
+    const again = name ? holder.querySelector(`[name="${CSS.escape(name)}"]`) : null;
+    if (again) again.focus({ preventScroll: true });
+  });
+  live.set(p.url, item);
+  return holder;
+}
 
 export default async function (el, ctx) {
   const q = ctx.query;
@@ -18,6 +48,7 @@ export default async function (el, ctx) {
     q: q.q, author: q.author, repo: q.repo, owner: q.owner, category: q.category || 'all', state: q.state, campus: q.campus, year: q.year,
     ...dates, sort: q.sort, order: q.order, page: q.page, _: Date.now(), // the public API is cacheable; decisions must show at once
   });
+  const live = new Map();
   const scoped = [q.author && `by ${q.author}`, q.repo && `in ${q.repo}`, q.owner && `in repositories of ${q.owner}`].filter(Boolean);
 
   el.append(
@@ -62,23 +93,19 @@ export default async function (el, ctx) {
             key: 'stars', label: 'Repository', sortable: true,
             render: (p) => h('div', null, ghLink(p.repo), h('div', { class: 'sub' }, `${fmt.compact(p.stars)} stars · ${p.ownerType === 'User' ? 'personal' : 'organisation'}`)),
           },
-          {
-            key: 'category', label: 'Category', wrap: true,
-            render: (p) => h('div', null, categoryBadge(p.category, p.tier),
-              p.category !== 'open_source' && p.reason && !p.override ? h('div', { class: 'sub' }, `Not counted: ${p.reason.replace(/^admin: /, 'admin, ')}`) : null,
-              p.category === 'open_source' && /^admin/.test(p.reason || '') && !p.override ? h('div', { class: 'sub' }, p.reason.replace(/^admin: /, 'Admin: ')) : null,
-              p.override ? h('div', { class: 'sub' }, overrideBadge(p.override, p.overrideNote), p.overrideNote ? ` ${p.overrideNote}` : null) : null),
-          },
+          { key: 'category', label: 'Category', wrap: true, render: (p) => liveCell(live, p, prState) },
           { key: 'createdAt', label: 'Opened', sortable: true, num: true, render: (p) => fmt.date(p.createdAt) },
-          {
-            key: 'decision', label: 'Decision',
-            render: (p) => decisionButtons({
-              name: p.url, current: p.override,
-              options: [{ value: 'open_source', label: 'Open source' }, { value: 'not_open_source', label: 'Not open source', danger: true }],
-              onPick: (value, btn) => decidePr(p, value, btn),
-            }),
-          },
+          { key: 'decision', label: 'Decision', render: (p) => liveCell(live, p, (row) => prButtons(row)) },
         ],
       }),
       pagination({ ...data, onPage: (page) => setQuery({ page: page > 1 ? page : '' }) })));
+
+  // show a decision on its row at once; decisions.js fetches the list again right after
+  return onDecision(({ kind, res }) => {
+    if (kind !== 'pr') return;
+    const item = live.get(res.pr.url);
+    if (!item) return;
+    Object.assign(item.row, res.pr);
+    for (const redraw of item.cells) redraw();
+  });
 }

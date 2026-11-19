@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, barCell, tierBadge, categoryBadge, ghLink, fmt, TIERS, TIER_LABELS } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeLine, repoHref, orgHref, categoryOptions, clean, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, repoHref, orgHref, campusList, categoryOptions, clean, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -58,7 +58,7 @@ export default async function (el, ctx) {
           { key: 'stats.students', sortKey: 'students', label: 'Students', num: true, sortable: true },
           { key: 'stats.prs', sortKey: 'prs', label: 'PRs', num: true, sortable: true },
           { key: 'stats.merged', sortKey: 'merged', label: 'Merged', num: true, sortable: true, render: (r) => barCell(r.stats.merged, max) },
-          { key: 'campuses', label: 'Campuses', render: (r) => (r.stats.campuses || []).join(', ') },
+          { key: 'campuses', label: 'Campuses', render: (r) => campusList(r.stats.campuses, ctx) },
           { key: 'lastPrAt', label: 'Last PR', num: true, render: (r) => (r.stats.lastPrAt ? h('span', { title: fmt.date(r.stats.lastPrAt) }, fmt.rel(r.stats.lastPrAt)) : null) },
         ],
       }),

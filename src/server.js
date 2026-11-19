@@ -61,7 +61,9 @@ export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, g
   app.use('/api/admin', adminRouter({ db, config, auth, github }));
   // The private page (SPEC addendum G): admin session + a second password. Mounted before the public router and
   // never given the shared cache, so nothing it returns can be cached or served to anyone else.
-  app.use('/api/owner', express.json({ limit: '2mb' }), ownerRouter({ db, config, owner: createOwnerAuth(config, auth, ownerOptions) }));
+  const owner = createOwnerAuth(config, auth, ownerOptions);
+  const ownerJson = express.json({ limit: '2mb' }); // outcome CSV uploads; only once the page is unlocked
+  app.use('/api/owner', (req, res, next) => (owner.isUnlocked(req) ? ownerJson : smallJson)(req, res, next), ownerRouter({ db, config, owner }));
   app.use('/api', publicRouter({ db, config, auth, cache }));
   app.use('/api', (req, res, next) => next(new ApiError(404, 'not_found', `no such endpoint: ${req.method} ${req.baseUrl}${req.path}`)));
 

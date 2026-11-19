@@ -3,11 +3,11 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import {
-  h, pageHead, statCard, card, table, pagination, tabs, categoryBar, categoryBadge, calendarHeatmap, ghLink, fmt,
+  h, pageHead, statCard, card, table, pagination, tabs, mixBar, categoryBadge, calendarHeatmap, ghLink, fmt,
 } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
 import {
-  getMeta, rangeParams, rangeControl, rangeLine, link, repoHref, studentName, prTable, fetchActivity, activityCard, put
+  getMeta, rangeParams, rangeControl, rangeLine, rangeSentence, cohortNodes, link, repoHref, studentName, prTable, fetchActivity, activityCard, put
 } from './common.js';
 
 export default async function (el, ctx) {
@@ -27,7 +27,7 @@ export default async function (el, ctx) {
   const prs = prPage || data.prs;
   const charts = [];
 
-  const where = [s.campus !== 'Unknown' ? s.campus : null, s.year !== 'Unknown' ? s.year : null, s.batch ? `Batch ${s.batch}` : null].filter(Boolean).join(' · ');
+  const where = cohortNodes(s, ctx, { past: true });
   put(el, 
     pageHead({
       crumbs: [{ label: 'Students', href: link('/students', {}, ctx) }],
@@ -53,7 +53,7 @@ export default async function (el, ctx) {
       anyOs ? h('div', { class: 'chart-box' }, monthCanvas) : h('p', { class: 'muted' }, 'No open-source pull requests in these months.')),
     card({ title: 'What the pull requests are' },
       h('div', { class: 'stack' },
-        st.totalPrs ? categoryBar(st.byCategory, { legend: true, large: true }) : h('p', { class: 'muted' }, 'No public pull requests in this period.'),
+        st.totalPrs ? mixBar(st.byCategory, { merged: st.osMerged, period: rangeSentence(data.range) || null, legend: true, large: true }) : h('p', { class: 'muted' }, 'No public pull requests in this period.'),
         h('dl', { class: 'facts' },
           h('dt', null, 'First PR'), h('dd', null, fmt.date(st.firstPrAt)),
           h('dt', null, 'Latest PR'), h('dd', null, fmt.date(st.lastPrAt)),

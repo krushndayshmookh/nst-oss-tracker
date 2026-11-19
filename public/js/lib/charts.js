@@ -2,8 +2,10 @@
 // `Chart` is a global loaded by the shell from /vendor/chart.umd.js. Colours are read from the document at
 // draw time and re-read when the colour scheme changes, so charts follow light / dark without a reload.
 //
-//   lineChart(canvas, { labels, series: [{ label, data, color? }] })            → { destroy(), update(data), chart }
+//   lineChart(canvas, { labels, series: [{ label, data, color?, dashed? }] })   → { destroy(), update(data), chart }
 //   barChart(canvas, { labels, series, stacked?, horizontal? })                 → same
+//   both also take, for rates (SPEC addendum D): format(value) → tick / tooltip text with its unit,
+//   axisTitle (the unit, printed along the value axis), tooltipLabel(seriesIndex, dataIndex, value) → one tooltip line
 //   doughnutChart(canvas, { labels, data, colors? })                            → same
 //
 // Colour is assigned by what a series IS, not by its position: a series or slice whose label (or `color`) names a
@@ -181,14 +183,32 @@ function cartesian(type, canvas, input, style) {
   const handle = mount(canvas, () => {
     const paint = (chart) => {
       const t = theme();
-      const { labels = [], series = [], stacked = false, horizontal = false } = current;
+      const { labels = [], series = [], stacked = false, horizontal = false, format = null, axisTitle = null, tooltipLabel = null } = current;
       chart.data.labels = showLabels(labels);
       chart.data.datasets = series.map((s, i) => {
         const color = pickColor(s.color, s.label, i);
-        return { label: s.label, data: s.data, ...style(color, t, { stacked, horizontal, count: series.length }) };
+        const dash = s.dashed ? { borderDash: [5, 4] } : {};
+        return { label: s.label, data: s.data, ...style(color, t, { stacked, horizontal, count: series.length }), ...dash };
       });
       const base = baseOptions(t, { legend: series.length > 1, indexAxis: horizontal ? 'y' : 'x' });
-      chart.options = { ...base, scales: axes(t, { stacked, horizontal }) };
+      const scales = axes(t, { stacked, horizontal });
+      const valueAxis = horizontal ? scales.x : scales.y;
+      if (format) {
+        // a rate axis: fractional ticks are fine, and the tick text carries the unit ("12%", "7.5")
+        valueAxis.ticks = { ...valueAxis.ticks, precision: undefined, callback: (v) => format(v) };
+        base.plugins.tooltip.callbacks.label = (ctx) => {
+          const v = horizontal ? ctx.parsed.x : ctx.parsed.y;
+          return ` ${ctx.dataset.label || ctx.label || ''}: ${format(v)}`;
+        };
+      }
+      if (axisTitle) valueAxis.title = { display: true, text: axisTitle, color: t.axis, font: { family: t.font, size: 11 }, padding: { bottom: 4 } };
+      if (tooltipLabel) {
+        base.plugins.tooltip.callbacks.label = (ctx) => {
+          const text = tooltipLabel(ctx.datasetIndex, ctx.dataIndex, horizontal ? ctx.parsed.x : ctx.parsed.y);
+          return text === null || text === undefined ? null : ` ${text}`;
+        };
+      }
+      chart.options = { ...base, scales };
     };
     const shell = { data: { labels: [], datasets: [] }, options: {} };
     paint(shell);
@@ -199,8 +219,8 @@ function cartesian(type, canvas, input, style) {
 }
 
 /** Line chart for change over time. `labels` in 'YYYY-MM' form are shown as 'Oct 2026'. */
-export function lineChart(canvas, { labels, series, label } = {}) {
-  return cartesian('line', canvas, { labels, series, label }, (color, t) => ({
+export function lineChart(canvas, { labels, series, label, format, axisTitle, tooltipLabel } = {}) {
+  return cartesian('line', canvas, { labels, series, label, format, axisTitle, tooltipLabel }, (color, t) => ({
     borderColor: color,
     backgroundColor: color,
     borderWidth: 2,
@@ -217,8 +237,8 @@ export function lineChart(canvas, { labels, series, label } = {}) {
 }
 
 /** Bar chart. `stacked` stacks the series; `horizontal` puts categories on the y axis (use it for long names). */
-export function barChart(canvas, { labels, series, stacked = false, horizontal = false, label } = {}) {
-  return cartesian('bar', canvas, { labels, series, stacked, horizontal, label }, (color, t, o) => ({
+export function barChart(canvas, { labels, series, stacked = false, horizontal = false, label, format, axisTitle, tooltipLabel } = {}) {
+  return cartesian('bar', canvas, { labels, series, stacked, horizontal, label, format, axisTitle, tooltipLabel }, (color, t, o) => ({
     backgroundColor: color,
     hoverBackgroundColor: color,
     borderColor: t.surface,

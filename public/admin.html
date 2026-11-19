@@ -60,7 +60,79 @@
     .is-admin input[type="time"]:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; border-color: var(--focus); }
     .is-admin input[type="time"][aria-invalid="true"] { border-color: var(--danger); }
 
+    /* Decisions: the state a row is already in, and who put it there (SPEC addendum E) */
+    .btn.is-current, .btn.is-current:hover {
+      opacity: 1; cursor: not-allowed; color: var(--ink-3); background: var(--surface-2); border-color: var(--rule); border-style: dashed;
+    }
+    .btn.is-current::before { content: "✓ "; }
+    .btn.is-busy { opacity: 0.6; cursor: progress; }
+    .decision { flex-wrap: nowrap; align-items: center; }
+    .decision .btn { white-space: nowrap; }
+    .decision-compact { flex-wrap: wrap; }
+    .src-tag {
+      display: inline-block; padding: 0 5px; border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); color: var(--ink-2);
+      font-size: var(--fs-xs); line-height: 1.5; white-space: nowrap; vertical-align: middle; text-decoration: none;
+    }
+    .src-tag.src-admin { border-style: dashed; border-color: var(--accent); color: var(--warn); font-weight: 600; }
+    a.src-tag { border-color: var(--info); color: var(--info); text-decoration: underline; }
+    .live-cell { min-width: 0; }
+
+    /* Review: rows open a detail panel; keyboard selection */
+    .kbd-hint { font-size: var(--fs-sm); margin: var(--s-2) 0 0; }
+    .kbd-hint kbd, .drawer kbd { padding: 0 4px; border: 1px solid var(--rule-strong); border-bottom-width: 2px; border-radius: 4px; background: var(--surface); color: var(--ink-2); }
+    @media (hover: none) { .kbd-hint { display: none; } }
+    table.data tbody tr.row-click { cursor: pointer; }
+    table.data tbody tr.row-click.is-selected > * { background: color-mix(in srgb, var(--brand-soft) 70%, var(--surface)); }
+    table.data tbody tr.row-click.is-selected > :first-child { box-shadow: inset 3px 0 0 var(--brand); }
+    table.data tbody tr.row-click.is-open > :first-child { box-shadow: inset 3px 0 0 var(--accent); }
+    table.data tbody tr.row-click.is-open > * { background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface)); }
+    .row-view { min-height: 0; padding-top: 0; padding-bottom: 0; }
+
+    .drawer {
+      position: fixed; top: 0; right: 0; bottom: 0; z-index: 40; width: min(620px, 100vw); display: flex; flex-direction: column;
+      background: var(--surface); color: var(--ink); border-left: 1px solid var(--rule-strong); box-shadow: -10px 0 28px rgb(8 20 17 / 0.16);
+    }
+    .drawer[aria-busy="true"] .drawer-body { opacity: 0.6; }
+    .drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--rule); background: var(--surface-2); }
+    .drawer-title { min-width: 0; }
+    .drawer-kind { font-size: var(--fs-xs); font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+    .drawer-head h2 { margin: 0; font-size: var(--fs-lg, 1.15rem); overflow-wrap: anywhere; }
+    .drawer-head h2:focus { outline: none; }
+    .drawer-body { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: var(--s-4); display: flex; flex-direction: column; gap: var(--s-4); }
+    .drawer-body > * { flex: none; }
+    .drawer-section { display: flex; flex-direction: column; gap: var(--s-2); }
+    .drawer-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s-3); font-size: var(--fs-data); color: var(--ink-2); }
+    .drawer-meta .btn-link { padding: 0; min-height: 0; font-size: inherit; font-weight: 600; }
+    .drawer-desc { margin: 0; font-size: var(--fs-data); }
+    .drawer-label { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-3); margin-right: var(--s-2); }
+    .drawer-state .sub, .drawer-item .sub { display: block; color: var(--ink-3); font-size: var(--fs-sm); margin-top: 2px; }
+    .drawer-range { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+    .drawer-range-note { font-size: var(--fs-sm); }
+    .drawer-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--s-2) var(--s-3); margin: 0; padding: var(--s-3); border: 1px solid var(--rule); border-radius: var(--radius); }
+    .drawer-figures dt { font-size: var(--fs-xs); color: var(--ink-3); font-weight: 550; }
+    .drawer-figures dd { margin: 0; font-size: var(--fs-md); font-weight: 650; font-variant-numeric: tabular-nums; }
+    .drawer-panel { min-width: 0; }
+    .drawer-filter { margin-bottom: var(--s-2); }
+    .drawer-note { font-size: var(--fs-sm); margin: 0 0 var(--s-2); }
+    .drawer-list { list-style: none; margin: 0; padding: 0; }
+    .drawer-item { display: flex; flex-direction: column; gap: 4px; padding: var(--s-3) 0; border-bottom: 1px solid var(--rule); }
+    .drawer-item:last-child { border-bottom: 0; }
+    .drawer-item-title { font-weight: 600; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s-2); }
+    .drawer-item-title .drawer-open { padding: 0; min-height: 0; font-size: inherit; font-weight: 600; text-align: left; white-space: normal; }
+    .drawer-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s-3); font-size: var(--fs-sm); color: var(--ink-3); }
+    .drawer-item-decide { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2); }
+    .drawer-item-cat { min-width: 0; }
+    .drawer .pagination { margin-top: var(--s-2); }
+    .site-nav a.nav-owner { white-space: nowrap; }
+    @media (prefers-reduced-motion: no-preference) {
+      .drawer { animation: drawer-in 0.14s ease-out; }
+      @keyframes drawer-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+    }
+    @media print { .drawer { display: none; } }
+
     @media (max-width: 640px) {
+      .drawer { width: 100vw; border-left: 0; }
+      .drawer-body { padding: var(--s-3); }
       .is-admin .page-head .toolbar { flex: 1 1 100%; }
       /* Students table becomes one block per student: every field is reachable without sideways scrolling */
       .edit-table .table-wrap { overflow: visible; }
@@ -108,6 +180,7 @@
         <a data-nav href="#/overrides">Overrides</a>
         <a data-nav href="#/rules">Rules</a>
         <a data-nav href="#/jobs">Jobs</a>
+        <a data-nav class="nav-owner" href="#/owner" title="Private: asks for its own password">Krushn's dashboard</a>
         <span class="nav-end"><button type="button" class="btn btn-sm" id="admin-logout">Sign out</button></span>
       </nav>
     </div>

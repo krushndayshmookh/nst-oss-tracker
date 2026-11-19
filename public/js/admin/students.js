@@ -13,7 +13,7 @@ import {
 const BACKFILL_LABELS = { pending: 'Pending', running: 'Running', done: 'Done', error: 'Failed' };
 const MISSING_LABELS = {
   batch: 'No batch', campus: 'No campus', name: 'No name', email: 'No email', enrolmentNo: 'No enrolment no.',
-  nameUnofficial: 'Name not from the sheet', githubId: 'GitHub account not confirmed', unresolved: 'GitHub user not found',
+  nameUnofficial: 'Name not from the sheet', githubId: 'Not yet checked on GitHub', unresolved: 'Account not found',
 };
 
 const displayName = (s) => s.name || s.username;
@@ -240,7 +240,7 @@ function openEdit(s) {
     }),
   };
   const facts = h('dl', { class: 'facts' },
-    h('dt', null, 'GitHub'), h('dd', null, ghLink(s.username), s.githubId ? ` (id ${s.githubId})` : ' (account not confirmed yet)'),
+    h('dt', null, 'GitHub'), h('dd', null, ghLink(s.username), s.githubId ? ` (id ${s.githubId})` : ' (not yet checked on GitHub)'),
     h('dt', null, 'Added'), h('dd', null, `${fmt.date(s.addedAt)}, ${s.addedBy === 'import' ? 'from the imported sheet' : 'by an admin'}`),
     s.sources && s.sources.length ? [h('dt', null, 'Sources'), h('dd', null, s.sources.join('; '))] : null,
     h('dt', null, 'History fetch'), h('dd', null, backfillText(s)),

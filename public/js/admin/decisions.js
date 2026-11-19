@@ -3,24 +3,138 @@
 // apply it, then report the server's own `affected` counts and what happened to the public headline numbers.
 
 import { api } from '../lib/api.js';
-import { refresh } from '../lib/router.js';
+import { refresh, href } from '../lib/router.js';
 import { h, toast, fmt } from '../lib/ui.js';
 import { act, decide, headline, headlineDelta, plural } from './common.js';
 
 const OWNER_STATE = { include: 'included', exclude: 'excluded', nst_internal: 'marked NST internal' };
 
-async function apply({ ask, post, done, button }) {
+/* ───────────── what happens after a decision ───────────── */
+
+const listeners = new Set();
+/**
+ * Hear about every decision the moment the server has applied it: fn({ kind: 'repo' | 'owner' | 'pr', res }) with the
+ * server's answer (`res.repo` / `res.org` / `res.pr`). Returns the function that stops listening.
+ * Rows and the detail panel use it to redraw their buttons at once, before the list itself is fetched again.
+ */
+export function onDecision(fn) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+async function apply({ kind, ask, post, done, button }) {
   const reading = headline(); // read the public totals while the admin is typing the note
   let note = '';
   if (ask) {
     note = await ask();
-    if (note === false) return;
+    if (note === false) return undefined;
   }
   const before = await reading; // must be complete before the change is sent
+  if (button) button.classList.add('is-busy');
   const res = await act(() => post(note), { button });
-  if (!res) return;
+  if (button) button.classList.remove('is-busy');
+  if (!res) return undefined;
+  for (const fn of [...listeners]) {
+    try { fn({ kind, res }); } catch (err) { console.error(err); }
+  }
+  refresh(); // the numbers around the row (counts, other rows of the same owner) follow in the background
   toast(done(res) + headlineDelta(before, await headline()));
-  refresh();
+  return res;
+}
+
+/* ───────────── effective state: what is already applied, and who applied it ───────────── */
+
+/** Where a repository's category comes from: 'admin' (its own decision), 'org' (a decision on its owner) or 'rule'. */
+export function repoSource(r) {
+  if (r.override) return 'admin';
+  if (r.ownerOverride || /^admin: org/.test(r.reason || '')) return 'org';
+  return 'rule';
+}
+
+/** Where a pull request's category comes from: 'admin' (marked itself), 'repo', 'org' (decision one level up) or 'rule'. */
+export function prSource(p) {
+  if (p.override) return 'admin';
+  if (/^admin: repo/.test(p.reason || '')) return 'repo';
+  if (/^admin: org/.test(p.reason || '')) return 'org';
+  return 'rule';
+}
+
+/** Review link that opens the detail panel of a repository ('owner/name') or an owner (login). */
+export function reviewHref(key) {
+  const name = String(key || '');
+  return name.includes('/') ? href('/review', { q: name, open: name }) : href('/review', { tab: 'owners', q: name, open: name });
+}
+
+const SOURCE_TEXT = { rule: 'by rule', admin: 'by admin', repo: 'via repo', org: 'via org' };
+const SOURCE_TITLE = {
+  rule: 'Placed by the rules (stars, lists, keywords). No admin decision.',
+  admin: 'Set by an admin decision. It wins over the rules.',
+};
+
+/**
+ * Small tag next to a category: sourceTag('rule' | 'admin') or sourceTag('repo' | 'org', { link: 'owner/name' | login })
+ * (the latter links to that row in Review). `note` becomes part of the tooltip.
+ */
+export function sourceTag(source, { link = null, note = null, onOpen = null } = {}) {
+  const text = SOURCE_TEXT[source] || SOURCE_TEXT.rule;
+  const cls = `src-tag src-${source}`;
+  if ((source === 'repo' || source === 'org') && link) {
+    const title = `Follows the admin decision on ${source === 'repo' ? 'the repository' : 'the owner'} ${link}. Open it.`;
+    const a = h('a', { class: cls, href: reviewHref(link), title }, text);
+    if (onOpen) a.addEventListener('click', (e) => { e.preventDefault(); onOpen(link); });
+    return a;
+  }
+  return h('span', { class: cls, title: source === 'admin' && note ? `Set by an admin: ${note}` : SOURCE_TITLE[source] || null }, text);
+}
+
+/** Buttons + reset for a repository row. Include is greyed when it already counts; Exclude only for an explicit exclude. */
+export function repoButtons(r, { name = r.name, compact = false } = {}) {
+  const src = repoSource(r);
+  const included = r.override === 'include' || (!r.override && r.category === 'open_source');
+  return decisionButtons({
+    name, compact, reset: Boolean(r.override),
+    options: [
+      { value: 'include', label: 'Include', already: included ? `Already included${r.override ? '' : src === 'org' ? ' (via its owner)' : ' (by rule)'}` : null },
+      { value: 'exclude', label: 'Exclude', danger: true, already: r.override === 'exclude' ? 'Already excluded' : null },
+    ],
+    onPick: (value, btn) => decideRepo(r, value, btn),
+  });
+}
+
+/** Buttons + reset for an owner row. An owner has no rule-based state of its own, so only its decision greys a button. */
+export function ownerButtons(o, { name = o.login, compact = false } = {}) {
+  return decisionButtons({
+    name, compact, reset: Boolean(o.override),
+    options: [
+      { value: 'include', label: 'Include', already: o.override === 'include' ? 'Already included' : null },
+      { value: 'exclude', label: 'Exclude', danger: true, already: o.override === 'exclude' ? 'Already excluded' : null },
+      { value: 'nst_internal', label: 'NST internal', already: o.override === 'nst_internal' ? 'Already NST internal' : null },
+    ],
+    onPick: (value, btn) => decideOwner(o, value, btn),
+  });
+}
+
+/** Buttons + reset for a pull request. Only an explicit mark greys its button. */
+export function prButtons(p, { name = p.url, compact = false } = {}) {
+  return decisionButtons({
+    name, compact, reset: Boolean(p.override),
+    options: [
+      { value: 'open_source', label: 'Open source', already: p.override === 'open_source' ? 'Already marked open source' : null },
+      { value: 'not_open_source', label: 'Not open source', danger: true, already: p.override === 'not_open_source' ? 'Already marked not open source' : null },
+    ],
+    onPick: (value, btn) => decidePr(p, value, btn),
+  });
+}
+
+/** True when `value` is the state the row is already in (its button is greyed). Used by the keyboard shortcuts. */
+export function alreadyText(kind, row, value) {
+  if (kind === 'repo') {
+    if (value === 'include' && (row.override === 'include' || (!row.override && row.category === 'open_source'))) return 'Already included';
+    if (value === 'exclude' && row.override === 'exclude') return 'Already excluded';
+    return null;
+  }
+  if (row.override !== value) return null;
+  return { include: 'Already included', exclude: 'Already excluded', nst_internal: 'Already NST internal' }[value] || null;
 }
 
 /* ───────────── repositories ───────────── */
@@ -37,13 +151,13 @@ export function decideRepo(repo, override, button = null) {
 
   if (override === null) {
     return apply({
-      post, button,
+      kind: 'repo', post, button,
       done: (res) => `Cleared the decision on ${repo.name}. ${n(res)} ${res.affected.prs === 1 ? 'is' : 'are'} back under the normal rules (now: ${categoryWord(res.repo)}).`,
     });
   }
   const include = override === 'include';
   return apply({
-    button,
+    kind: 'repo', button,
     ask: () => decide({
       title: include ? 'Include repository' : 'Exclude repository',
       confirmLabel: include ? 'Include' : 'Exclude',
@@ -78,7 +192,7 @@ export function decideOwner(org, override, button = null) {
   const n = (res) => `${plural(res.affected.prs, 'pull request')} in ${plural(res.affected.repos, 'repository', 'repositories')}`;
 
   if (override === null) {
-    return apply({ post, button, done: (res) => `Cleared the decision on ${org.login}. ${n(res)} are back under the normal rules.` });
+    return apply({ kind: 'owner', post, button, done: (res) => `Cleared the decision on ${org.login}. ${n(res)} are back under the normal rules.` });
   }
   const text = {
     include: [`Include owner`, 'Include', `Include everything owned by ${org.login}? All ${reach} will count as open source, whatever the star thresholds say.`,
@@ -89,7 +203,7 @@ export function decideOwner(org, override, button = null) {
       (res) => `Marked ${org.login} as NST internal. ${n(res)} now show as NST internal.`],
   }[override];
   return apply({
-    button,
+    kind: 'owner', button,
     ask: () => decide({
       title: text[0],
       confirmLabel: text[1],
@@ -111,11 +225,11 @@ export function decidePr(pr, override, button = null) {
   const post = (note) => api.post('/admin/prs/override', { url: pr.url, override, note });
   const ref = `${pr.repo}#${pr.number}`;
   if (override === null) {
-    return apply({ post, button, done: (res) => `Cleared the decision on ${ref}. It is back under the normal rules (now: ${categoryWord(res.pr)}).` });
+    return apply({ kind: 'pr', post, button, done: (res) => `Cleared the decision on ${ref}. It is back under the normal rules (now: ${categoryWord(res.pr)}).` });
   }
   const yes = override === 'open_source';
   return apply({
-    button,
+    kind: 'pr', button,
     ask: () => decide({
       title: yes ? 'Mark as open source' : 'Mark as not open source',
       confirmLabel: yes ? 'Mark open source' : 'Mark not open source',
@@ -132,23 +246,29 @@ export function decidePr(pr, override, button = null) {
 }
 
 /**
- * The row of decision buttons. options: [{ value, label, danger? }]; `current` is the applied override (gets .is-on);
- * `onPick(value | null, button)`. "Clear" appears only when a decision exists.
+ * The row of decision buttons.
+ *   options: [{ value, label, danger?, already?: string }] — `already` (e.g. "Already included") means the row is in that
+ *     state now: the button is greyed, `aria-disabled`, carries the text as tooltip and does nothing when clicked.
+ *   reset: show "Reset to rule" (an explicit decision exists) · onPick(value | null, button) · name: suffix of the button names.
  */
-export function decisionButtons({ options, current, onPick, name }) {
+export function decisionButtons({ options, reset = false, onPick, name, compact = false }) {
   const buttons = options.map((o) => {
-    const on = current === o.value;
+    const off = Boolean(o.already);
     const b = h('button', {
-      type: 'button', name: `${o.value}-${name}`, class: ['btn btn-sm', o.danger && !on && 'btn-danger', on && 'is-on'],
-      'aria-pressed': on ? 'true' : 'false', title: on ? 'Applied. Click to change the note.' : null,
+      type: 'button', name: `${o.value}-${name}`, class: ['btn btn-sm', o.danger && !off && 'btn-danger', off && 'is-current'],
+      'aria-disabled': off ? 'true' : null, title: o.already || null, 'aria-label': off ? `${o.label}: ${o.already}` : null,
     }, o.label);
-    b.addEventListener('click', () => onPick(o.value, b));
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (b.getAttribute('aria-disabled') === 'true' || b.disabled) return;
+      onPick(o.value, b);
+    });
     return b;
   });
-  if (current) {
-    const clear = h('button', { type: 'button', name: `clear-${name}`, class: 'btn btn-sm btn-link' }, 'Clear');
-    clear.addEventListener('click', () => onPick(null, clear));
+  if (reset) {
+    const clear = h('button', { type: 'button', name: `clear-${name}`, class: 'btn btn-sm btn-link', title: 'Remove the admin decision; the rules decide again' }, 'Reset to rule');
+    clear.addEventListener('click', (e) => { e.stopPropagation(); onPick(null, clear); });
     buttons.push(clear);
   }
-  return h('div', { class: 'btn-group', style: { flexWrap: 'nowrap' } }, buttons);
+  return h('div', { class: ['btn-group decision', compact && 'decision-compact'] }, buttons);
 }

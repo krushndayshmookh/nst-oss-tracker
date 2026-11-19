@@ -1,9 +1,9 @@
 // Organisation page. GET /orgs/:login
 
 import { api } from '../lib/api.js';
-import { h, pageHead, statCard, card, table, barCell, badge, categoryBadge, categoryBar, overrideBadge, calendarHeatmap, fmt, CATEGORIES } from '../lib/ui.js';
+import { h, pageHead, statCard, card, table, barCell, badge, categoryBadge, mixBar, overrideBadge, calendarHeatmap, fmt, CATEGORIES } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, link, repoHref, contributorsTable, fetchActivity, activityCard, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, rangeSentence, isPastRange, link, repoHref, contributorsTable, fetchActivity, activityCard, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -34,7 +34,7 @@ export default async function (el, ctx) {
       statCard({ label: 'Students', value: st.students }),
       statCard({ label: 'Projects', value: st.repos, sub: st.maxStars ? `largest has ${fmt.compact(st.maxStars)} stars` : null }),
       statCard({ label: 'All PRs', value: st.prs, sub: `${fmt.num(st.merged)} merged`, href: link('/prs', { owner: org.login, category: 'all' }, ctx) })),
-    present.length > 1 ? card({ title: 'All pull requests by category' }, categoryBar(st.byCategory, { legend: true, large: true })) : null,
+    present.length > 1 ? card({ title: 'All pull requests by category' }, mixBar(st.byCategory, { merged: st.osMerged ?? null, period: rangeSentence(data.range) || null, legend: true, large: true })) : null,
   );
 
   const strip = activityCard(activity, ctx, { card, calendarHeatmap, linkQuery: { owner: org.login, category: 'all' } });

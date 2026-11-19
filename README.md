@@ -243,8 +243,10 @@ kubectl -n oss-status create secret generic oss-status-mongo \
   --from-literal=MONGO_ROOT_PASSWORD="$(openssl rand -hex 24)" \
   --from-literal=MONGO_APP_PASSWORD="$MONGO_APP_PASSWORD"
 ADMIN_PASSWORD="$(openssl rand -base64 24)"; echo "admin password: $ADMIN_PASSWORD"   # store it in the password manager
+OWNER_PASSWORD="$(openssl rand -base64 24)"; echo "private page password: $OWNER_PASSWORD"   # for the owner of "Krushn's dashboard" only
 kubectl -n oss-status create secret generic oss-status-secrets \
   --from-literal=ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+  --from-literal=OWNER_PASSWORD="$OWNER_PASSWORD" \
   --from-literal=SESSION_SECRET="$(openssl rand -hex 32)" \
   --from-literal=GITHUB_TOKEN='<github token>' \
   --from-literal=MONGODB_URI="mongodb://oss_status:${MONGO_APP_PASSWORD}@mongo:27017/oss_status?authSource=oss_status"

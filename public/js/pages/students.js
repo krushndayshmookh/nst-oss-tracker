@@ -2,8 +2,8 @@
 
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
-import { h, pageHead, filterBar, table, pagination, card, categoryBar, barCell, fmt } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, yearLabel, studentCell, csvButton, opts, clean, put } from './common.js';
+import { h, pageHead, filterBar, table, pagination, card, mixBar, mixLegend, barCell, fmt } from '../lib/ui.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, rangeSentence, isPastRange, yearLabel, studentCell, campusLink, csvButton, opts, clean, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -15,6 +15,7 @@ export default async function (el, ctx) {
   const max = data.items.reduce((m, s) => Math.max(m, s.stats.osMerged), 0);
   const any = Boolean(q.q || q.campus || q.year || q.batch || q.hasOs);
   const past = isPastRange(data.range, meta);
+  const period = rangeSentence(data.range) || null;
 
   put(el, 
     pageHead({
@@ -38,6 +39,7 @@ export default async function (el, ctx) {
       onChange: (v) => setQuery({ ...v, page: '' }),
     }),
     card({ flush: true },
+      mixLegend(),
       table({
         caption: 'Students',
         rows: data.items,
@@ -46,14 +48,14 @@ export default async function (el, ctx) {
         empty: any ? 'No students match these filters.' : 'No data yet. An admin needs to import or add students.',
         columns: [
           { key: 'name', label: 'Student', sortable: true, render: (s) => studentCell(s, ctx) },
-          { key: 'campus', label: 'Campus' },
+          { key: 'campus', label: 'Campus', render: (s) => campusLink(s.campus, ctx) },
           { key: 'year', label: 'Year', render: (s) => yearLabel(s, past) },
           { key: 'stats.osMerged', sortKey: 'osMerged', label: 'Merged open-source', num: true, sortable: true, render: (s) => barCell(s.stats.osMerged, max) },
           { key: 'stats.osPrs', sortKey: 'osPrs', label: 'Open-source PRs', num: true, sortable: true },
           { key: 'stats.osMajorMerged', label: 'Major merged', num: true, title: 'Merged into major projects' },
           { key: 'stats.osRepos', label: 'Projects', num: true, title: 'Open-source projects contributed to' },
           { key: 'stats.totalPrs', sortKey: 'totalPrs', label: 'All PRs', num: true, sortable: true },
-          { key: 'mix', label: 'Mix', title: 'All pull requests by category', render: (s) => categoryBar(s.stats.byCategory) },
+          { key: 'mix', label: 'Mix', title: 'All pull requests by category', render: (s) => mixBar(s.stats.byCategory, { merged: s.stats.osMerged, period }) },
           {
             key: 'stats.lastPrAt', sortKey: 'lastPrAt', label: 'Last PR', sortable: true, num: true,
             render: (s) => (s.stats.lastPrAt ? h('span', { title: fmt.date(s.stats.lastPrAt) }, fmt.rel(s.stats.lastPrAt)) : null),
