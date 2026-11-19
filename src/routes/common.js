@@ -106,11 +106,11 @@ export async function findStudent(db, name) {
 }
 
 /** Mongo filter for PR lists / exports (active PRs only). `range` comes from dates.resolveRange (null = no date filter). */
-export async function prFilter(db, query, { defaultCategory = 'open_source', range = null } = {}) {
+export async function prFilter(db, query, { defaultCategory = 'open_source', range = null, impliedState = '' } = {}) {
   const f = { active: true, ...cohortFilter(query) };
   const category = oneOf(query, 'category', [...CATEGORIES, 'all'], defaultCategory);
   if (category !== 'all') f.category = category;
-  const state = oneOf(query, 'state', STATES);
+  const state = oneOf(query, 'state', STATES) || impliedState; // an explicit state wins
   if (state) f.state = state;
   const tier = oneOf(query, 'tier', TIERS);
   if (tier) f.tier = tier;

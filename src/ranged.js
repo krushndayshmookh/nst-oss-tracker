@@ -50,7 +50,9 @@ export function allOf(...parts) {
 }
 
 /**
- * One row per `by` ('author' | 'repoLc' | 'ownerLc') with every counter the public shapes need.
+ * One row per `by` ('author' | 'repoLc' | 'ownerLc') with the counters the public shape of that kind needs
+ * (studentStats / repoStats / ownerStats below) and nothing else: the whole-dataset maps are kept in memory for a
+ * while, so every field that is not read costs heap for nothing.
  * `match` is ANDed with active:true and the range.
  */
 export async function groupStats(db, { by, range, match = {} }) {
@@ -58,30 +60,39 @@ export async function groupStats(db, { by, range, match = {} }) {
   const { opened, merged } = rangeFlags(range);
   const touched = range.all ? true : { $or: [opened, merged] };
   const setIf = (cond, field) => ({ $addToSet: cond === true ? field : { $cond: [cond, field, null] } });
-  const rows = await prs.aggregate([
-    { $match: allOf({ active: true }, match, rangeMatch(range)) },
-    { $group: {
-      _id: `$${by}`,
-      opened: sumIf(opened), merged: sumIf(merged),
-      osOpened: sumIf(and(OS, opened)), osMerged: sumIf(and(OS, merged)),
+  const sizeOf = (f) => ({ $size: { $setDifference: [f, [null]] } });
+  const student = by === 'author';
+  const repo = by === 'repoLc';
+  const owner = by === 'ownerLc';
+  const cats = Object.fromEntries(CATEGORIES.map((k) => [`c_${k}`, sumIf(and(opened, eq('$category', k)))]));
+  const first = { $min: opened === true ? '$createdAt' : { $cond: [opened, '$createdAt', null] } };
+  const last = { $max: opened === true ? '$createdAt' : { $cond: [opened, '$createdAt', null] } };
+  const group = {
+    _id: `$${by}`,
+    opened: sumIf(opened), merged: sumIf(merged),
+    ...((student || owner) && { osOpened: sumIf(and(OS, opened)), osMerged: sumIf(and(OS, merged)), ...cats }),
+    ...(student && {
       osOpen: sumIf(and(OS, opened, eq('$state', 'open'))),
       osMajorMerged: sumIf(and(OS, merged, eq('$tier', 'major'))),
-      open: sumIf(and(opened, eq('$state', 'open'))), closed: sumIf(and(opened, eq('$state', 'closed'))),
       osRepos: setIf(and(OS, touched), '$repoLc'), osOrgs: setIf(and(OS, touched), '$ownerLc'),
-      students: { $addToSet: '$author' }, campuses: { $addToSet: '$campus' }, repos: { $addToSet: '$repoLc' },
-      maxStars: { $max: '$stars' },
-      ...Object.fromEntries(CATEGORIES.map((k) => [`c_${k}`, sumIf(and(opened, eq('$category', k)))])),
-      firstPrAt: { $min: opened === true ? '$createdAt' : { $cond: [opened, '$createdAt', null] } },
-      lastPrAt: { $max: opened === true ? '$createdAt' : { $cond: [opened, '$createdAt', null] } },
       lastOsMergedAt: { $max: { $cond: [and(OS, merged), '$mergedAt', null] } },
-    } },
-    { $project: {
-      opened: 1, merged: 1, osOpened: 1, osMerged: 1, osOpen: 1, osMajorMerged: 1, open: 1, closed: 1, maxStars: 1, campuses: 1,
-      firstPrAt: 1, lastPrAt: 1, lastOsMergedAt: 1,
-      ...Object.fromEntries(CATEGORIES.map((k) => [`c_${k}`, 1])),
-      osRepos: { $size: { $setDifference: ['$osRepos', [null]] } }, osOrgs: { $size: { $setDifference: ['$osOrgs', [null]] } },
-      students: { $size: '$students' }, repos: { $size: '$repos' },
-    } },
+    }),
+    ...((student || repo) && { firstPrAt: first, lastPrAt: last }),
+    ...(repo && {
+      open: sumIf(and(opened, eq('$state', 'open'))), closed: sumIf(and(opened, eq('$state', 'closed'))),
+      campuses: { $addToSet: '$campus' },
+    }),
+    ...((repo || owner) && { students: { $addToSet: '$author' } }),
+    ...(owner && { repos: { $addToSet: '$repoLc' }, maxStars: { $max: '$stars' } }),
+  };
+  const project = Object.fromEntries(Object.keys(group).filter((k) => k !== '_id').map((k) => [k, 1]));
+  if (student) Object.assign(project, { osRepos: sizeOf('$osRepos'), osOrgs: sizeOf('$osOrgs') });
+  if (repo || owner) project.students = { $size: '$students' };
+  if (owner) project.repos = { $size: '$repos' };
+  const rows = await prs.aggregate([
+    { $match: allOf({ active: true }, match, rangeMatch(range)) },
+    { $group: group },
+    { $project: project },
   ], AGG).toArray();
   return new Map(rows.map((g) => [g._id, g]));
 }

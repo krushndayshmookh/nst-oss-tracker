@@ -87,8 +87,6 @@ export function adminRouter({ db, config, auth, github = null }) {
   const tz = config.tzName;
   r.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
-    // any admin write can change what the public pages show: drop the in-memory response cache when it is done
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) res.on('finish', invalidateAll);
     next();
   });
 
@@ -111,6 +109,14 @@ export function adminRouter({ db, config, auth, github = null }) {
   r.post('/logout', (req, res) => auth.logout(req, res));
 
   r.use(auth.requireAdmin);
+
+  // Any admin write can change what the public pages show: drop the in-memory caches when it is done. Only for a
+  // logged-in admin and only when the write succeeded: a request that was refused (no session, no CSRF header, wrong
+  // password, validation error) changed nothing, and must not let an anonymous client keep the public cache empty.
+  r.use((req, res, next) => {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) res.on('finish', () => { if (res.statusCode < 400) invalidateAll(); });
+    next();
+  });
 
   // ---------- students ----------
 

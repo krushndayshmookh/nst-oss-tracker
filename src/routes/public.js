@@ -11,7 +11,7 @@ import { emptyByCategory, emptyOwnerStats, emptyRepoStats, emptyStudentStats } f
 import { loadRules } from '../rules.js';
 import { csvLine } from '../csv.js';
 import { ApiError, notFound } from '../auth.js';
-import { createCache } from '../cache.js';
+import { createCache, generation } from '../cache.js';
 import { RangeError400, TZ, loadAcademicYear, presets, rangeOut, resolveRange } from '../dates.js';
 import {
   AGG, activity, allOf, groupStats, monthlySeries, ownerStats, rangeFlags, rangeMatch, repoStats, studentStats, sumIf,
@@ -24,6 +24,9 @@ import {
 const PUBLIC_STUDENT = { username: 1, name: 1, campus: 1, batch: 1, stats: 1 };
 const T = 15000; // maxTimeMS of public finds
 // Query parameters that can change a response; anything else is ignored and must not create new cache entries.
+export const RESPONSE_CACHE_BYTES = 32 * 1024 * 1024;
+export const GROUPS_PRESET = 9; // e.g. 3 ranges x (students, repos, orgs)
+export const GROUPS_CUSTOM = 3;
 const KNOWN_PARAMS = ['campus', 'year', 'batch', 'category', 'state', 'tier', 'q', 'from', 'to', 'range', 'sort', 'order', 'page', 'limit',
   'author', 'repo', 'owner', 'hasOs', 'metric'];
 
@@ -55,7 +58,14 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
   const r = express.Router();
   const c = collections(db);
   const tz = config.tzName || TZ;
-  cache ??= createCache({ ttlMs: config.publicCacheMs ?? 0 });
+  // Response bodies: bounded by count and by size (a visitor chooses the query, so the cache must not grow with it).
+  cache ??= createCache({ ttlMs: config.publicCacheMs ?? 0, maxBytes: RESPONSE_CACHE_BYTES });
+  // Whole-dataset maps of ranged numbers are large (thousands of rows each), so they live in two small LRUs of their
+  // own: one for the preset ranges every visitor shares, one for custom ranges (enough to page through a list).
+  // Any number of distinct custom ranges therefore pins at most GROUPS_CUSTOM maps; the rest is computed and dropped.
+  const groupTtl = cache.enabled ? (config.publicCacheMs || 60000) : 0;
+  const presetGroups = createCache({ ttlMs: groupTtl, max: GROUPS_PRESET });
+  const customGroups = createCache({ ttlMs: groupTtl, max: GROUPS_CUSTOM });
 
   r.get('/health', async (req, res) => {
     res.set('Cache-Control', 'no-store');
@@ -76,7 +86,10 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     else res.set('Cache-Control', 'public, max-age=60');
     res.set('Vary', 'Cookie');
     if (req.method !== 'GET' || admin || !cache.enabled || req.path.startsWith('/export/')) return next();
-    const key = `res:${req.path}?${KNOWN_PARAMS.map((k) => { const v = str(req.query, k); return v ? `${k}=${v}` : ''; }).filter(Boolean).join('&')}`;
+    // One value per known parameter, in a fixed order, JSON-encoded: free text (q, author, repo, owner) that contains
+    // `&from=...` can never produce the key of a different request.
+    const key = `res:${JSON.stringify([req.path, KNOWN_PARAMS.map((k) => str(req.query, k))])}`;
+    const startedAt = generation();
     const hit = cache.get(key);
     if (typeof hit === 'string') {
       res.set('X-Cache', 'hit');
@@ -86,7 +99,8 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     res.json = (body) => {
       if (res.statusCode !== 200) return json(body);
       const text = JSON.stringify(body);
-      cache.set(key, text);
+      // an admin write or a job that ended while this was being computed dropped the cache: the body may predate it
+      if (generation() === startedAt) cache.set(key, text);
       res.set('X-Cache', 'miss');
       return res.type('json').send(text);
     };
@@ -107,7 +121,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
   }
   const rangeKey = (range) => `${range.from || ''}|${range.to || ''}`;
   /** Map<id, groupStats row> for the whole dataset in a range, shared by lists, campus table and exports. */
-  const grouped = (by, range) => cache.memo(`g:${by}:${rangeKey(range)}`, () => groupStats(db, { by, range }));
+  const grouped = (by, range) => (range.preset ? presetGroups : customGroups).memo(`g:${by}:${rangeKey(range)}`, () => groupStats(db, { by, range }));
 
   r.get('/meta', async (req, res) => {
     const now = new Date();
@@ -366,8 +380,8 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     const { page, limit, skip } = paging(req.query);
     const { sort, dir } = sorting(req.query, Object.keys(PR_SORT), 'createdAt');
     const range = await rangeOf(req);
-    let f = await prFilter(db, req.query, { range });
-    if (sort === 'mergedAt' && !f.state) f = allOf(f, { state: 'merged' });
+    // sorting by merge date lists merged PRs only; the range then applies to mergedAt, as for an explicit state=merged
+    const f = await prFilter(db, req.query, { range, impliedState: sort === 'mergedAt' ? 'merged' : '' });
     const order = { [PR_SORT[sort]]: dir, ...(sort !== 'createdAt' && { createdAt: -1 }), _id: 1 };
     res.json({ range: rangeOut(range), ...(await prPage(db, f, { sort: order, page, limit, skip, admin: req.isAdmin })) });
   });

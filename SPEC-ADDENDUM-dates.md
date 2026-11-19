@@ -91,3 +91,39 @@ Scheduling moves INTO the app (replicas: 1, in-process runner already exists). T
   subtle "updates paused" note when paused.
 - Tests: schedule fires once at the right IST time (fake clock), not while paused, auto-resume at `pausedUntil`, catch-up on boot once,
   409 on concurrent trigger, cancel mid-run keeps saved data and marks `cancelled`, restart during a run marks it interrupted and the next tick recovers.
+
+# SPEC addendum D — per-student scaling for campus comparisons (Krushn, 19 Nov 2026)
+Campuses differ a lot in size (RU ~1,500 tracked students, SMRU ~50), so raw side-by-side counts mislead.
+- Denominator = number of ACTIVE tracked students in the group (same campus/year/batch filters as the numerator), returned by the API
+  so the UI never hard-codes it: `/api/activity` adds `cohorts:[{campus, students}]` and each `byCampusMonth` row adds
+  `per100Opened`, `per100Merged` (count / students × 100, 1 decimal) and `activeStudents` + `activePct` (distinct students with ≥1 PR of the
+  selected category that month / students × 100). `/api/campuses` rows add `osMergedPer100`, `osPrsPer100`, `withOsMergedPct`, `withAnyPrPct`.
+- Activity page "Campuses by month": a toggle **Per 100 students (default) | Share of students active | Raw counts**; the chart title and
+  axis state the unit; tooltip shows both the rate and the raw count with the cohort size ("RU · 12.4 per 100 · 187 PRs · 1,504 students").
+  Legend labels carry cohort size ("RU (1,504)"). Small cohorts (< 30 students) get a "small cohort" marker because rates swing widely.
+- Same toggle on every other side-by-side campus comparison: the overview campus × year table gets rate columns
+  ("% with merged OS PR", "merged OS PRs per 100 students") next to the raw ones and sorts by the rate by default; any campus bar/line chart
+  defaults to per-100.
+- Year-wise comparisons within a campus use the same per-100 logic (cohort = that campus-year).
+- About page: one paragraph explaining the denominator (students with a known GitHub username, not full batch strength).
+- Tests: rates equal count/students×100 for a fixture; zero-student cohort yields null, not Infinity/NaN; filters change the denominator.
+
+# SPEC addendum E — small admin fixes (Krushn, 19 Nov 2026)
+- Review queues (repos AND owners): the button for the state a row is already in is disabled and greyed (`aria-disabled`, tooltip
+  "Already included"/"Already excluded"/"Already NST internal"). This reflects the EFFECTIVE state: an explicit override, or (for a repo with
+  no override) its rule-based category — open_source ⇒ "Include" greyed; low_signal/practice/etc ⇒ "Exclude" greyed only when an explicit
+  exclude override exists (a rule-based low-signal repo can still be explicitly excluded? No: grey "Exclude" only for explicit excludes;
+  grey "Include" when explicitly included). Show a small "by rule" / "by admin" tag next to the category so the difference is visible, and a
+  "Reset to rule" action when an explicit override exists. Buttons update immediately after a click (no reload). Same on the PR mark/unmark page.
+- Missing-data chip "githubId": relabel "Not yet checked on GitHub"; keep "Account not found" (unresolved) as a separate chip.
+- Review queues: clicking a repo or org row (or a "View" action) opens a detail drawer/panel WITHOUT leaving the queue (filters, page and
+  scroll position preserved; closable with Esc; deep-linkable via `&open=<repo|owner>`): header with name, link to GitHub, stars, owner type,
+  current category + by rule/by admin, the include/exclude/NST-internal/reset buttons; tabs **PRs** (title linked to GitHub, author, state,
+  dates, lines changed, per-PR mark/unmark; filter by state; paginated) and **Students** (name, username, campus, year, PRs / merged in this
+  repo-or-org, link to public profile); for an org also a **Repos** tab (each with its own include/exclude). Numbers respect an all-time view
+  by default with a toggle to the current academic year. Uses existing endpoints (`/api/prs?repo=|owner=&category=all`, `/api/repos/:o/:n`,
+  `/api/orgs/:login`) with admin fields where needed. Keyboard: j/k or arrows move between rows, Enter opens, i/e apply include/exclude.
+- PR classification buttons (admin PR page, and the PRs tab of the review detail panel): same greying rule as repos/orgs. A PR explicitly
+  marked "not open source" has its "Not open source" button disabled+greyed ("Already marked not open source"); one explicitly marked
+  "open source" has that button greyed; "Reset to rule" appears only when an explicit mark exists. Show "by rule"/"by admin" (and, when the
+  PR's category comes from its repo/org decision, "via repo"/"via org" with a link to that row). Buttons update immediately after a click.
