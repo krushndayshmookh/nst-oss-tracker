@@ -25,6 +25,7 @@
 import crypto from 'node:crypto';
 import { collections } from './db.js';
 import { reclassifyAll } from './classify.js';
+import { invalidateAll } from './cache.js';
 
 export const JOB_TYPES = ['backfill', 'sync', 'reclassify', 'import'];
 const LOG_LINES = 200;
@@ -112,7 +113,8 @@ async function execute(db, job, { echo = false } = {}) {
   try {
     const handler = await getHandler(job.type);
     const summary = await handler(db, job.params || {}, ctx);
-    set = { status: 'done', summary: summary && typeof summary === 'object' ? summary : null, error: null };
+    // A handler that stopped because cancelRequested was set says so in its summary: what it saved until then is kept.
+    set = { status: summary?.cancelled ? 'cancelled' : 'done', summary: summary && typeof summary === 'object' ? summary : null, error: null };
   } catch (e) {
     ctx.log(`error: ${e?.message || e}`);
     set = { status: 'error', error: String(e?.message || e) };
@@ -121,6 +123,7 @@ async function execute(db, job, { echo = false } = {}) {
   await chain;
   set.finishedAt = new Date();
   await jobs.updateOne({ _id: job._id }, { $set: set });
+  invalidateAll(); // cached public responses are stale now
   return jobs.findOne({ _id: job._id });
 }
 
@@ -198,6 +201,28 @@ export async function startRunner(db) {
     { $set: { status: 'error', error: 'interrupted (no result after 6 hours)', finishedAt: new Date() } },
   );
   pump(db);
+}
+
+/**
+ * Cooperative cancel (SPEC addendum C). A queued job is cancelled at once; a running one gets `cancelRequested` and its
+ * handler stops between two students, keeping what it saved (status `cancelled`).
+ * -> the job doc, or null when there is no such job. A job that already finished is returned unchanged.
+ */
+export async function cancelJob(db, id) {
+  const { jobs } = collections(db);
+  const queued = await jobs.findOneAndUpdate({ _id: id, status: 'queued' },
+    { $set: { status: 'cancelled', cancelRequested: true, finishedAt: new Date(), error: null } }, { returnDocument: 'after' });
+  if (queued) return queued;
+  const running = await jobs.findOneAndUpdate({ _id: id, status: 'running' }, { $set: { cancelRequested: true } }, { returnDocument: 'after' });
+  return running || jobs.findOne({ _id: id });
+}
+
+/** The sync job that is queued or running right now, if any (`cli` runs older than the stale limit do not count). */
+export async function activeSync(db) {
+  return collections(db).jobs.findOne({
+    type: 'sync',
+    $or: [{ runner: 'app', status: { $in: ['queued', 'running'] } }, { runner: 'cli', status: 'running', startedAt: { $gte: new Date(Date.now() - STALE_CLI_MS) } }],
+  }, { sort: { createdAt: 1 } });
 }
 
 /** Resolves when the in-process runner has no queued or running job left (used by tests and graceful shutdown). */

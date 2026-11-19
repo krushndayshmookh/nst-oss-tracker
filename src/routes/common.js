@@ -3,6 +3,8 @@ import { collections } from '../db.js';
 import { ApiError, badRequest } from '../auth.js';
 import { CAMPUSES, CATEGORIES, TIERS, YEAR_LABELS, batchesForYear, yearLabel } from '../classify.js';
 import { emptyByCategory, emptyOwnerStats, emptyRepoStats, emptyStudentStats } from '../ingest.js';
+import { inRange } from '../dates.js';
+import { allOf } from '../ranged.js';
 
 export { ApiError, badRequest };
 export const STATES = ['open', 'merged', 'closed'];
@@ -58,14 +60,25 @@ export function sorting(query, allowed, def, ascByDefault = ['name', 'username']
   return { sort, order, dir: order === 'asc' ? 1 : -1 };
 }
 
-function dateParam(query, name, endOfDay) {
+export const MAX_SEARCH = 100;
+
+/** The `q` search text; longer than MAX_SEARCH characters is a bad request (it is matched as an unanchored regex). */
+export function search(query, name = 'q') {
   const v = str(query, name);
-  if (!v) return null;
-  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(v);
-  const d = new Date(dateOnly ? `${v}T00:00:00.000Z` : v);
-  if (Number.isNaN(d.getTime()) || !/^\d{4}-\d{2}-\d{2}/.test(v)) throw badRequest(`invalid ${name}: expected an ISO date`);
-  if (dateOnly && endOfDay) d.setUTCHours(23, 59, 59, 999);
-  return d;
+  if (v.length > MAX_SEARCH) throw badRequest(`invalid ${name}: at most ${MAX_SEARCH} characters`);
+  return v;
+}
+
+/**
+ * Which PRs belong to a date range (SPEC addendum A2): merged ones by mergedAt when `state` is 'merged', any other
+ * single state by createdAt, and without a state filter everything opened or merged inside the range.
+ */
+export function prRangeFilter(range, state = '') {
+  const cond = range ? inRange(range) : null;
+  if (!cond) return {};
+  if (state === 'merged') return { mergedAt: cond };
+  if (state) return { createdAt: cond };
+  return { $or: [{ createdAt: cond }, { mergedAt: cond }] };
 }
 
 /** campus / year / batch filter on fields `campus` and `batch` (students and prs share these names). */
@@ -92,8 +105,8 @@ export async function findStudent(db, name) {
     || students.findOne({ username: { $regex: `^${escapeRegex(key)}$`, $options: 'i' } });
 }
 
-/** Mongo filter for PR lists / exports. `publicOnly` restricts to active PRs. */
-export async function prFilter(db, query, { defaultCategory = 'open_source' } = {}) {
+/** Mongo filter for PR lists / exports (active PRs only). `range` comes from dates.resolveRange (null = no date filter). */
+export async function prFilter(db, query, { defaultCategory = 'open_source', range = null } = {}) {
   const f = { active: true, ...cohortFilter(query) };
   const category = oneOf(query, 'category', [...CATEGORIES, 'all'], defaultCategory);
   if (category !== 'all') f.category = category;
@@ -107,12 +120,8 @@ export async function prFilter(db, query, { defaultCategory = 'open_source' } = 
   if (repo) f.repoLc = lc(repo);
   const owner = str(query, 'owner');
   if (owner) f.ownerLc = lc(owner);
-  const q = str(query, 'q');
-  if (q) f.$or = [{ title: contains(q) }, { repo: contains(q) }];
-  const from = dateParam(query, 'from', false);
-  const to = dateParam(query, 'to', true);
-  if (from || to) f.createdAt = { ...(from && { $gte: from }), ...(to && { $lte: to }) };
-  return f;
+  const q = search(query);
+  return allOf(f, q ? { $or: [{ title: contains(q) }, { repo: contains(q) }] } : null, prRangeFilter(range, state));
 }
 
 // ---------- serialisers ----------
@@ -136,9 +145,37 @@ export function studentOut(s, now = new Date()) {
   };
 }
 
+export const MISSING_KEYS = ['batch', 'campus', 'name', 'email', 'enrolmentNo', 'nameUnofficial', 'githubId', 'unresolved'];
+const blank = (field) => ({ $or: [{ [field]: { $in: [null, ''] } }, { [field]: { $exists: false } }] });
+/** Mongo filter per kind of missing data (SPEC addendum B). */
+export const MISSING_FILTERS = {
+  batch: { batch: null },
+  campus: { $or: [{ campus: { $in: [null, '', 'Unknown'] } }, { campus: { $exists: false } }] },
+  name: blank('name'),
+  email: blank('email'),
+  enrolmentNo: blank('enrolmentNo'),
+  nameUnofficial: { nameSource: { $ne: 'sheet' } },
+  githubId: { githubId: null },
+  unresolved: { $or: [{ unresolvedSince: { $type: 'date' } }, { 'backfill.error': 'not_found' }] },
+};
+/** The same rules for one document: the list of missing keys. */
+export function missingOf(s) {
+  const out = [];
+  if (s.batch === null || s.batch === undefined) out.push('batch');
+  if (!s.campus || s.campus === 'Unknown') out.push('campus');
+  if (!s.name) out.push('name');
+  if (!s.email) out.push('email');
+  if (!s.enrolmentNo) out.push('enrolmentNo');
+  if (s.nameSource !== 'sheet') out.push('nameUnofficial');
+  if (s.githubId === null || s.githubId === undefined) out.push('githubId');
+  if (s.unresolvedSince instanceof Date || s.backfill?.error === 'not_found') out.push('unresolved');
+  return out;
+}
+
 export function adminStudentOut(s, now = new Date()) {
   return {
     ...studentOut(s, now),
+    unresolvedSince: iso(s.unresolvedSince), missing: missingOf(s),
     githubId: s.githubId ?? null, nameSource: s.nameSource || '', email: s.email || '', enrolmentNo: s.enrolmentNo || '',
     sources: s.sources || [], notes: s.notes || '', active: s.active !== false,
     backfill: { status: s.backfill?.status || 'pending', at: iso(s.backfill?.at), error: s.backfill?.error ?? null },
@@ -146,8 +183,11 @@ export function adminStudentOut(s, now = new Date()) {
   };
 }
 
-/** `students` is a Map<student _id, {username, name}> (see studentMap). */
-export function prOut(p, students, now = new Date()) {
+/**
+ * `students` is a Map<student _id, {username, name}> (see studentMap).
+ * `overrideNote` is the admin's private reason for a decision: it is only returned to a logged-in admin (`admin: true`).
+ */
+export function prOut(p, students, now = new Date(), { admin = false } = {}) {
   const s = students?.get(p.author);
   return {
     url: p.url || p._id, number: p.number ?? 0, title: p.title || '', author: s?.username || p.authorLogin || p.author, authorName: s?.name || '',
@@ -155,25 +195,25 @@ export function prOut(p, students, now = new Date()) {
     createdAt: iso(p.createdAt), mergedAt: iso(p.mergedAt), closedAt: iso(p.closedAt),
     additions: p.additions ?? 0, deletions: p.deletions ?? 0, changedFiles: p.changedFiles ?? 0, comments: p.comments ?? 0, reviews: p.reviews ?? 0,
     campus: p.campus || 'Unknown', batch: p.batch ?? null, year: yearLabel(p.batch, now),
-    category: p.category, tier: p.tier ?? null, reason: p.reason || '', override: p.override ?? null, overrideNote: p.overrideNote ?? null,
+    category: p.category, tier: p.tier ?? null, reason: p.reason || '', override: p.override ?? null, overrideNote: admin ? (p.overrideNote ?? null) : null,
   };
 }
 
-export function repoOut(r) {
+export function repoOut(r, { admin = false } = {}) {
   const s = { ...emptyRepoStats(), ...(r.stats || {}) };
   return {
     name: r.name || r._id, owner: r.owner, ownerType: r.ownerType, stars: r.stars ?? 0, forks: r.forks ?? 0, language: r.language ?? null,
     license: r.license ?? null, description: r.description ?? null, isFork: Boolean(r.isFork), isArchived: Boolean(r.isArchived),
-    category: r.category, tier: r.tier ?? null, reason: r.reason || '', override: r.override ?? null, overrideNote: r.overrideNote ?? null,
+    category: r.category, tier: r.tier ?? null, reason: r.reason || '', override: r.override ?? null, overrideNote: admin ? (r.overrideNote ?? null) : null,
     stats: { prs: s.prs, merged: s.merged, open: s.open, closed: s.closed, students: s.students, campuses: s.campuses || [],
       firstPrAt: iso(s.firstPrAt), lastPrAt: iso(s.lastPrAt) },
   };
 }
 
-export function orgOut(o) {
+export function orgOut(o, { admin = false } = {}) {
   const s = { ...emptyOwnerStats(), ...(o.stats || {}) };
   return {
-    login: o.login || o._id, type: o.type || 'User', override: o.override ?? null, overrideNote: o.overrideNote ?? null,
+    login: o.login || o._id, type: o.type || 'User', override: o.override ?? null, overrideNote: admin ? (o.overrideNote ?? null) : null,
     stats: { repos: s.repos, prs: s.prs, merged: s.merged, osPrs: s.osPrs, osMerged: s.osMerged, students: s.students, maxStars: s.maxStars ?? 0,
       byCategory: { ...emptyByCategory(), ...(s.byCategory || {}) } },
   };
@@ -184,6 +224,7 @@ export function jobOut(j, withLog = false) {
     id: j._id, type: j.type, runner: j.runner, status: j.status, params: j.params || {},
     createdAt: iso(j.createdAt), startedAt: iso(j.startedAt), finishedAt: iso(j.finishedAt),
     progress: { done: j.progress?.done ?? 0, total: j.progress?.total ?? 0 }, summary: j.summary ?? null, error: j.error ?? null,
+    cancelRequested: Boolean(j.cancelRequested),
   };
   if (withLog) out.log = j.log || [];
   return out;
@@ -207,15 +248,16 @@ export async function studentMap(db, ids) {
 }
 
 /** Runs a paged PR query and serialises it: { items, total, page, limit }. */
-export async function prPage(db, filter, { sort = { createdAt: -1, _id: 1 }, page = 1, limit = 25, skip = 0, extra = null } = {}) {
+export async function prPage(db, filter, { sort = { createdAt: -1, _id: 1 }, page = 1, limit = 25, skip = 0, extra = null, admin = false } = {}) {
   const { prs } = collections(db);
   const [rows, total] = await Promise.all([
-    prs.find(filter).sort(sort).skip(skip).limit(limit).toArray(),
-    prs.countDocuments(filter),
+    prs.find(filter).sort(sort).skip(skip).limit(limit).maxTimeMS(15000).toArray(),
+    prs.countDocuments(filter, { maxTimeMS: 15000 }),
   ]);
   const students = await studentMap(db, rows.map((p) => p.author));
   const now = new Date();
-  return { items: rows.map((p) => (extra ? { ...prOut(p, students, now), ...extra(p) } : prOut(p, students, now))), total, page, limit };
+  const out = (p) => prOut(p, students, now, { admin });
+  return { items: rows.map((p) => (extra ? { ...out(p), ...extra(p) } : out(p))), total, page, limit };
 }
 
 export const COLLATION = { locale: 'en', strength: 2 };

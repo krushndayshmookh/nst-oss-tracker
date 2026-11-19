@@ -15,7 +15,7 @@
 #   kubectl -n oss-status logs -f job/oss-status-import
 #   kubectl -n oss-status delete job oss-status-import
 #
-# The import is idempotent: running it again keeps overrides and admin edits.
+# The import only adds what is missing: running it again never overwrites overrides, admin edits or synced PR data.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -33,20 +33,27 @@ spec:
       labels:
         app.kubernetes.io/name: oss-status-import
         app.kubernetes.io/part-of: oss-status
+        oss-status/mongo-client: "true"     # admitted by the mongo NetworkPolicy
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: import
           image: registry.nstsdc.org:5000/oss-status:CHANGE-ME   # same tag as in kustomization.yaml
           command: ["node", "scripts/import_legacy.js", "--data", "/data"]
           env:
-            - name: MONGODB_URI
-              value: mongodb://mongo:27017
+            - name: MONGODB_URI             # carries the app user's password
+              valueFrom:
+                secretKeyRef:
+                  name: oss-status-secrets
+                  key: MONGODB_URI
             - name: MONGODB_DB
               value: oss_status
             - name: NODE_ENV

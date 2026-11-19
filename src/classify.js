@@ -2,6 +2,7 @@
 import { collections } from './db.js';
 import { loadRules, normalizeRules } from './rules.js';
 import { refreshAggregates } from './ingest.js';
+import { config } from './config.js';
 
 export const CATEGORIES = ['open_source', 'practice', 'nst_internal', 'peer_repo', 'own_repo', 'low_signal'];
 export const TIERS = ['major', 'established', 'emerging'];
@@ -10,12 +11,20 @@ export const YEAR_LABELS = ['1st year', '2nd year', '3rd year', '4th year', 'alu
 
 // ---------- academic year helpers ----------
 
-/** Start year of the academic year containing `now` (AY starts 1 July, UTC). */
+const ayFormat = new Intl.DateTimeFormat('en-US', { timeZone: config.tzName, year: 'numeric', month: 'numeric' });
+
+/** Start year of the academic year containing `now` (AY starts 1 July 00:00 in config.tzName, Asia/Kolkata by default). */
 export function academicYearStart(now = new Date()) {
-  return now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+  let year = 0;
+  let month = 0;
+  for (const p of ayFormat.formatToParts(now)) {
+    if (p.type === 'year') year = Number(p.value);
+    if (p.type === 'month') month = Number(p.value);
+  }
+  return month >= 7 ? year : year - 1;
 }
 
-/** batch (admission year) -> '1st year'..'4th year' | 'alumni' | 'Unknown'. */
+/** batch (admission year) -> '1st year'..'4th year' | 'alumni' | 'Unknown' (no batch, or a batch that has not started yet). */
 export function yearLabel(batch, now = new Date()) {
   if (batch === null || batch === undefined || !Number.isFinite(batch)) return 'Unknown';
   const y = academicYearStart(now) - batch + 1;
@@ -24,14 +33,17 @@ export function yearLabel(batch, now = new Date()) {
   return YEAR_LABELS[y - 1];
 }
 
-/** Inverse of yearLabel, as a Mongo filter fragment: {batch:n} | {batch:null} | {batch:{$lt:n}}; null for an unknown label. */
+/**
+ * Inverse of yearLabel, as a Mongo filter fragment: {batch:n} | {batch:{$lt:n}} (alumni) |
+ * {batch:{$not:{$lte:n}}} ('Unknown': no batch or a future batch, exactly the rows yearLabel calls Unknown); null for an unknown label.
+ */
 export function batchesForYear(label, now = new Date()) {
   const ay = academicYearStart(now);
   const idx = YEAR_LABELS.indexOf(label);
   if (idx < 0) return null;
   if (idx <= 3) return { batch: ay - idx };
   if (label === 'alumni') return { batch: { $lt: ay - 3 } };
-  return { batch: null };
+  return { batch: { $not: { $lte: ay } } };
 }
 
 // ---------- pure classification ----------

@@ -184,13 +184,22 @@ export const fmt = {
 /** ghUrl('apache') → https://github.com/apache · ghUrl('apache/airflow') → repo URL. Full URLs pass through. */
 export function ghUrl(pathOrLogin) {
   const s = String(pathOrLogin || '').trim();
-  if (/^https?:\/\//i.test(s)) return s;
+  if (/^https:\/\//i.test(s)) return s;
+  // anything else, also another URL scheme, becomes a path under github.com
   return `https://github.com/${s.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`;
 }
 
-/** External link that opens in a new tab and carries the ↗ marker. */
+/** Only https:// links leave the site: a javascript: or data: URL that ever reached the database must not become an href. */
+export function safeUrl(url) {
+  const s = String(url || '').trim();
+  return /^https:\/\//i.test(s) ? s : null;
+}
+
+/** External link that opens in a new tab and carries the ↗ marker. A URL that is not https:// renders as plain text. */
 export function extLink(text, url, attrs = {}) {
-  return h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', class: ['ext', attrs.class], title: attrs.title }, text);
+  const href = safeUrl(url);
+  if (!href) return h('span', { class: attrs.class, title: attrs.title }, text);
+  return h('a', { href, target: '_blank', rel: 'noopener noreferrer', class: ['ext', attrs.class], title: attrs.title }, text);
 }
 
 /** Link to GitHub: ghLink('apache/airflow') or ghLink('octocat', 'GitHub profile'). */

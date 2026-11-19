@@ -21,13 +21,15 @@ test('yearLabel / batchesForYear follow the academic year (starts 1 July)', () =
   assert.equal(yearLabel(2027, nov), 'Unknown');
   assert.equal(yearLabel(null, nov), 'Unknown');
   assert.equal(yearLabel(undefined, nov), 'Unknown');
-  // before 1 July the academic year is still the previous one
-  assert.equal(yearLabel(2025, new Date('2026-06-30T23:59:59Z')), '1st year');
-  assert.equal(yearLabel(2025, new Date('2026-07-01T00:00:00Z')), '2nd year');
+  // before 1 July the academic year is still the previous one; the year turns at 00:00 IST (18:30 UTC the day before)
+  assert.equal(yearLabel(2025, new Date('2026-06-30T18:29:59Z')), '1st year');
+  assert.equal(yearLabel(2025, new Date('2026-06-30T18:30:00Z')), '2nd year');
+  assert.equal(yearLabel(2026, new Date('2027-06-30T20:30:00Z')), '2nd year', '2027-07-01 02:00 IST is already the new academic year');
   assert.deepEqual(batchesForYear('1st year', nov), { batch: 2026 });
   assert.deepEqual(batchesForYear('4th year', nov), { batch: 2023 });
   assert.deepEqual(batchesForYear('alumni', nov), { batch: { $lt: 2023 } });
-  assert.deepEqual(batchesForYear('Unknown', nov), { batch: null });
+  // 'Unknown' = no batch or a batch that has not started yet: exactly the rows yearLabel calls Unknown
+  assert.deepEqual(batchesForYear('Unknown', nov), { batch: { $not: { $lte: 2026 } } });
   assert.equal(batchesForYear('5th year', nov), null);
   for (const b of [2023, 2024, 2025, 2026]) assert.deepEqual(batchesForYear(yearLabel(b, nov), nov), { batch: b });
 });

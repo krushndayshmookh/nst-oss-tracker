@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Imports data/students.csv + data/raw/<username-lowercase>.json into Mongo. Idempotent: re-running preserves
-// overrides and admin edits to existing students.
+// Imports data/students.csv + data/raw/<username-lowercase>.json into Mongo. Idempotent: every student, PR, repo and
+// owner is written only when it does not exist yet, so a re-run adds what is missing and never puts the old file
+// contents over overrides, admin edits or anything a later sync stored (PR state, stars, tiers).
 // Usage: node scripts/import_legacy.js [--data <dir>=./data] [--fetched-at <ISO>]
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -57,7 +58,7 @@ export async function importLegacy(db, params = {}, ctx = { log() {}, progress()
   const stored = new Map();
   for await (const s of c.students.find({ _id: { $in: [...fromCsv.keys()] } }, { projection: { username: 1, campus: 1, batch: 1, active: 1, backfill: 1, addedBy: 1, lastSyncedAt: 1 } })) stored.set(s._id, s);
 
-  // 2. raw PR files
+  // 2. raw PR files (insert-only: see the header comment)
   let files = [];
   try {
     files = (await fs.readdir(path.join(dir, 'raw'))).filter((f) => f.endsWith('.json')).sort();
@@ -90,7 +91,7 @@ export async function importLegacy(db, params = {}, ctx = { log() {}, progress()
     skippedPrivate += docs.skippedPrivate;
     for (const p of docs.prs) {
       for (const d of [p.createdAt, p.mergedAt, p.closedAt]) if (d && d.getTime() > latest) latest = d.getTime();
-      prOps.push(prUpsertOp(p, null));
+      prOps.push(prUpsertOp(p, null, { insertOnly: true }));
     }
     prCount += docs.prs.length;
     for (const [k, v] of docs.repos) repos.set(k, v);
@@ -101,8 +102,8 @@ export async function importLegacy(db, params = {}, ctx = { log() {}, progress()
   }
   await bulk(c.prs, prOps);
   await Promise.all([
-    bulk(c.repos, [...repos.values()].map((r) => repoUpsertOp(r, null))),
-    bulk(c.owners, [...owners.values()].map(ownerUpsertOp)),
+    bulk(c.repos, [...repos.values()].map((r) => repoUpsertOp(r, null, { insertOnly: true }))),
+    bulk(c.owners, [...owners.values()].map((o) => ownerUpsertOp(o, { insertOnly: true }))),
   ]);
   ctx.progress(files.length, files.length);
   ctx.log(`raw: ${files.length} files, ${prCount} PRs, ${repos.size} repos, ${owners.size} owners, ${skippedPrivate} private PRs skipped`);

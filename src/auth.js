@@ -1,16 +1,23 @@
 // Admin auth (SPEC section 6): one shared password, HMAC-signed cookie, in-memory login rate limit.
 import crypto from 'node:crypto';
+import { clientIp } from './limits.js';
+import { adminProblem } from './config.js';
 
 export const COOKIE_NAME = 'oss_admin';
 export const SESSION_MS = 12 * 60 * 60 * 1000;
 const MAX_FAILURES = 10;
 const WINDOW_MS = 15 * 60 * 1000;
+// Above this many failed logins from ALL addresses in the window, every login attempt is answered slowly. Nobody is
+// locked out by somebody else's guesses (the hard limit is per visitor address), yet guessing spread over many addresses is throttled.
+export const GLOBAL_SLOW_AFTER = 30;
+export const GLOBAL_SLOW_MS = 1500;
 
 export class ApiError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, extra = null) {
     super(message);
     this.status = status;
     this.code = code;
+    this.extra = extra; // additional fields for the error object, e.g. { jobId }
   }
 }
 export const badRequest = (m) => new ApiError(400, 'bad_request', m);
@@ -60,8 +67,19 @@ export function safeEqual(a, b) {
   return crypto.timingSafeEqual(ha, hb);
 }
 
-export function createAuth(config) {
-  const failures = new Map(); // ip -> [timestamps of failed attempts]
+/**
+ * Cookie signing key. It depends on both secrets, so rotating ADMIN_PASSWORD signs every admin out
+ * (sessions are stateless: there is nothing else to revoke).
+ */
+export function cookieKey(config) {
+  return crypto.createHmac('sha256', String(config.sessionSecret)).update(`cookie:${config.adminPassword}`).digest();
+}
+
+export function createAuth(config, { sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const failures = new Map(); // visitor address -> [timestamps of failed attempts]
+  let allFailures = [];       // timestamps of failed attempts from every address
+  const key = cookieKey(config);
+  const problem = () => adminProblem(config);
 
   const recent = (ip, now) => {
     const list = (failures.get(ip) || []).filter((t) => now - t < WINDOW_MS);
@@ -71,14 +89,14 @@ export function createAuth(config) {
   const cookieAttrs = () => `Path=/; HttpOnly; SameSite=Lax${config.production ? '; Secure' : ''}`;
 
   const auth = {
-    configured: () => Boolean(config.adminPassword),
+    configured: () => !problem(),
     isAdmin(req) {
-      if (!config.adminPassword) return false;
-      return verifyToken(parseCookies(req.headers.cookie)[COOKIE_NAME], config.sessionSecret);
+      if (problem()) return false;
+      return verifyToken(parseCookies(req.headers.cookie)[COOKIE_NAME], key);
     },
-    /** 503 while ADMIN_PASSWORD is unset. */
+    /** 503 while ADMIN_PASSWORD is unset or, in production, while either secret is weak or a placeholder. */
     requireConfigured(req, res, next) {
-      if (!config.adminPassword) return next(new ApiError(503, 'unavailable', 'admin is not configured (ADMIN_PASSWORD is unset)'));
+      if (problem()) return next(new ApiError(503, 'unavailable', problem()));
       next();
     },
     /** State-changing requests must carry X-Requested-With: oss-admin. */
@@ -91,23 +109,31 @@ export function createAuth(config) {
       if (!auth.isAdmin(req)) return next(new ApiError(401, 'unauthorized', 'admin login required'));
       next();
     },
-    login(req, res) {
-      const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-      const now = Date.now();
+    async login(req, res) {
+      const ip = clientIp(req, config);
+      let now = Date.now();
       const list = recent(ip, now);
       if (list.length >= MAX_FAILURES) {
         res.set('Retry-After', String(Math.ceil((WINDOW_MS - (now - list[0])) / 1000)));
         throw new ApiError(429, 'rate_limited', 'too many failed login attempts, try again later');
       }
+      allFailures = allFailures.filter((t) => now - t < WINDOW_MS);
+      if (allFailures.length >= GLOBAL_SLOW_AFTER) {
+        await sleep(GLOBAL_SLOW_MS);
+        now = Date.now();
+      }
       const password = req.body?.password;
       if (typeof password !== 'string' || !safeEqual(password, config.adminPassword)) {
-        list.push(now);
-        failures.set(ip, list);
+        const mine = recent(ip, now);
+        mine.push(now);
+        failures.set(ip, mine);
+        allFailures.push(now);
+        if (allFailures.length > 5000) allFailures = allFailures.slice(-1000);
         if (failures.size > 10000) for (const k of failures.keys()) recent(k, now);
         throw new ApiError(401, 'unauthorized', 'wrong password');
       }
       failures.delete(ip);
-      res.append('Set-Cookie', `${COOKIE_NAME}=${createToken(config.sessionSecret, now)}; Max-Age=${SESSION_MS / 1000}; ${cookieAttrs()}`);
+      res.append('Set-Cookie', `${COOKIE_NAME}=${createToken(key, now)}; Max-Age=${SESSION_MS / 1000}; ${cookieAttrs()}`);
       res.json({ ok: true });
     },
     logout(req, res) {

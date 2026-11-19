@@ -54,7 +54,7 @@ export function buildDocs(student, nodes) {
     const mergedAt = date(n.mergedAt);
     if (githubId === null && Number.isFinite(n.author?.databaseId)) githubId = n.author.databaseId;
     prs.push({
-      _id: n.url, url: n.url, number: num(n.number), title: String(n.title ?? '').split(/\s+/).filter(Boolean).join(' '),
+      _id: n.url, url: n.url, ...(Number.isFinite(n.databaseId) && { ghId: n.databaseId }), number: num(n.number), title: String(n.title ?? '').split(/\s+/).filter(Boolean).join(' '),
       author: student._id, authorLogin: n.author?.login || student.username || student._id,
       repo, repoLc, owner, ownerLc, ownerType,
       state: mergedAt ? 'merged' : (n.state === 'OPEN' ? 'open' : 'closed'),
@@ -75,22 +75,35 @@ export function buildDocs(student, nodes) {
 
 const strip = ({ _id, ...rest }) => rest;
 
-export function prUpsertOp(doc, cls) {
+/**
+ * `insertOnly` (used by the legacy import): the document is written only when it does not exist yet, so a re-run of
+ * the import can never put old file contents over what a later sync stored.
+ */
+export function prUpsertOp(doc, cls, { insertOnly = false } = {}) {
   const set = strip(doc);
   const onInsert = { override: null };
   if (cls) Object.assign(set, cls);
   else Object.assign(onInsert, { category: 'low_signal', tier: null, reason: 'not classified yet' });
-  return { updateOne: { filter: { _id: doc._id }, update: { $set: set, $setOnInsert: onInsert }, upsert: true } };
+  let update = { $set: set, $setOnInsert: onInsert };
+  if (insertOnly) {
+    // the denormalised student fields are the one thing refreshed on an existing PR (they come from the stored student)
+    const { campus, batch, active, ...rest } = set;
+    update = { $set: { campus, batch, active }, $setOnInsert: { ...rest, ...onInsert } };
+  }
+  return { updateOne: { filter: { _id: doc._id }, update, upsert: true } };
 }
-export function repoUpsertOp(doc, cls) {
+export function repoUpsertOp(doc, cls, { insertOnly = false } = {}) {
   const set = strip(doc);
   const onInsert = { override: null, stats: emptyRepoStats() };
   if (cls) Object.assign(set, cls);
   else Object.assign(onInsert, { category: 'low_signal', tier: null, reason: 'not classified yet' });
-  return { updateOne: { filter: { _id: doc._id }, update: { $set: set, $setOnInsert: onInsert }, upsert: true } };
+  const update = insertOnly ? { $setOnInsert: { ...set, ...onInsert } } : { $set: set, $setOnInsert: onInsert };
+  return { updateOne: { filter: { _id: doc._id }, update, upsert: true } };
 }
-export function ownerUpsertOp(doc) {
-  return { updateOne: { filter: { _id: doc._id }, update: { $set: strip(doc), $setOnInsert: { override: null, stats: emptyOwnerStats() } }, upsert: true } };
+export function ownerUpsertOp(doc, { insertOnly = false } = {}) {
+  const onInsert = { override: null, stats: emptyOwnerStats() };
+  const update = insertOnly ? { $setOnInsert: { ...strip(doc), ...onInsert } } : { $set: strip(doc), $setOnInsert: onInsert };
+  return { updateOne: { filter: { _id: doc._id }, update, upsert: true } };
 }
 
 export async function bulk(coll, ops, size = 2000) {
@@ -101,16 +114,21 @@ export async function bulk(coll, ops, size = 2000) {
  * Upserts the PRs of one student. Preserves overrides, skips private repos, dedupes by url, upserts repo / owner
  * metadata, classifies with the current rules and sets student.githubId when missing. Does NOT touch aggregates.
  * `student` is the students doc (needs _id, username, campus, batch, active, githubId).
+ * A repo whose class changed (its stars crossed a threshold) gets its other stored PRs reclassified.
  * Returns { prs: n, repos: n }.
  */
-export async function upsertPRs(db, student, nodes) {
+export async function upsertPRs(db, student, nodes, { onlyUrls = null } = {}) {
   const c = collections(db);
-  const { prs, repos, owners, githubId } = buildDocs(student, nodes);
+  const built = buildDocs(student, nodes);
+  const { repos, owners, githubId } = built;
+  // `onlyUrls` (a Set): write the PR documents of these urls only, but the repo / owner metadata of every node. The
+  // nightly sync uses it for PRs whose updatedAt did not change: the PR is left alone, the fresh star count is kept.
+  const prs = onlyUrls ? built.prs.filter((p) => onlyUrls.has(p._id)) : built.prs;
   if (githubId !== null && !student.githubId) {
     await c.students.updateOne({ _id: student._id, $or: [{ githubId: null }, { githubId: { $exists: false } }] }, { $set: { githubId } });
     student.githubId = githubId;
   }
-  if (!prs.length) return { prs: 0, repos: 0 };
+  if (!prs.length && !repos.size) return { prs: 0, repos: 0 };
   const ctx = await loadContext(db, { fresh: false });
   const repoIds = [...repos.keys()];
   const ownerIds = [...owners.keys()];
@@ -147,6 +165,73 @@ export async function upsertPRs(db, student, nodes) {
   await bulk(c.prs, prOps);
   if (drifted.length) await reclassify(db, { prFilter: { repoLc: { $in: drifted } }, repoFilter: null, ctx });
   return { prs: prs.length, repos: repos.size };
+}
+
+/**
+ * After a COMPLETE full-history fetch of one student: removes that student's stored PRs that GitHub no longer returns.
+ * A PR's url (= _id) changes when its repository is renamed or transferred and when the owner account is renamed, so
+ * without this every such PR would be stored, and counted, twice; PRs of deleted or now-private repos disappear too.
+ * A stored PR that came back under a new url (same GitHub id, or same number + creation time) is "moved": an admin
+ * override on it, and an override on its old repository, are carried over to the new url / repository.
+ * Guards: nothing is removed when the fetch returned no PR at all, or when more than half of the stored PRs (and more
+ * than 20) would vanish without a new url: that looks like a GitHub hiccup, not like reality.
+ * `nodes` are the raw nodes of the fetch. Does NOT touch aggregates. -> { removed, moved, skipped }
+ */
+export async function pruneStalePRs(db, student, nodes) {
+  const c = collections(db);
+  const fetched = buildDocs(student, nodes).prs;
+  const out = { removed: 0, moved: 0, skipped: '' };
+  const stored = await c.prs.find({ author: student._id },
+    { projection: { number: 1, createdAt: 1, ghId: 1, repoLc: 1, override: 1, overrideNote: 1, overrideAt: 1 } }).toArray();
+  const urls = new Set(fetched.map((p) => p._id));
+  const stale = stored.filter((p) => !urls.has(p._id));
+  if (!stale.length) return out;
+  if (!fetched.length) { out.skipped = `GitHub returned no PRs but ${stored.length} are stored`; return out; }
+
+  const key = (p) => `${p.number}|${p.createdAt instanceof Date ? p.createdAt.getTime() : ''}`;
+  const byGhId = new Map();
+  const byKey = new Map();
+  for (const p of fetched) {
+    if (p.ghId) byGhId.set(p.ghId, p);
+    byKey.set(key(p), p);
+  }
+  const moves = []; // [stored doc, fetched doc]
+  for (const old of stale) {
+    const now = (old.ghId && byGhId.get(old.ghId)) || byKey.get(key(old));
+    if (now) moves.push([old, now]);
+  }
+  const vanished = stale.length - moves.length;
+  if (vanished > 20 && vanished > stored.length / 2) {
+    out.skipped = `${vanished} of ${stored.length} stored PRs are missing from the fetch`;
+    return out;
+  }
+
+  const prIds = [];
+  const repoMoves = new Map();
+  for (const [old, now] of moves) {
+    if (old.override) {
+      const upd = await c.prs.updateOne({ _id: now._id, override: null },
+        { $set: { override: old.override, overrideNote: old.overrideNote ?? null, overrideAt: old.overrideAt ?? null } });
+      if (upd.modifiedCount) prIds.push(now._id);
+    }
+    if (old.repoLc !== now.repoLc) repoMoves.set(old.repoLc, now.repoLc);
+  }
+  const repoIds = [];
+  if (repoMoves.size) {
+    for (const r of await c.repos.find({ _id: { $in: [...repoMoves.keys()] }, override: { $ne: null } }).toArray()) {
+      const to = repoMoves.get(r._id);
+      const upd = await c.repos.updateOne({ _id: to, override: null },
+        { $set: { override: r.override, overrideNote: r.overrideNote ?? null, overrideAt: r.overrideAt ?? null } });
+      if (upd.modifiedCount) repoIds.push(to);
+    }
+  }
+  await c.prs.deleteMany({ author: student._id, _id: { $in: stale.map((p) => p._id) } });
+  if (prIds.length || repoIds.length) {
+    await reclassify(db, { prFilter: { $or: [{ _id: { $in: prIds } }, { repoLc: { $in: repoIds } }] }, repoFilter: repoIds.length ? { _id: { $in: repoIds } } : null });
+  }
+  out.moved = moves.length;
+  out.removed = vanished;
+  return out;
 }
 
 // ---------- aggregates ----------

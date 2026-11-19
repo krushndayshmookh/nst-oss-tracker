@@ -1,48 +1,31 @@
-// Public read-only API (SPEC section 5, Appendix A). Counts only active students / PRs.
+// Public read-only API (SPEC section 5, Appendix A, addendum A). Counts only active students / PRs.
+//
+// Date ranges: every endpoint that returns counts or lists takes `from` / `to` (YYYY-MM-DD, days in config.tzName) or
+// `range=<preset>`; with none of them the current academic year applies, `range=all` is all time. The response echoes
+// `range: { from, to, label, preset }`. With a bounded range the `stats` objects keep their keys but hold ranged numbers
+// (opened = createdAt in range, merged = mergedAt in range); with `range=all` they are the precomputed all-time stats.
 import express from 'express';
 import { collections } from '../db.js';
 import { CATEGORIES, TIERS, YEAR_LABELS, yearLabel } from '../classify.js';
-import { emptyByCategory } from '../ingest.js';
+import { emptyByCategory, emptyOwnerStats, emptyRepoStats, emptyStudentStats } from '../ingest.js';
 import { loadRules } from '../rules.js';
 import { csvLine } from '../csv.js';
-import { notFound } from '../auth.js';
+import { ApiError, notFound } from '../auth.js';
+import { createCache } from '../cache.js';
+import { RangeError400, TZ, loadAcademicYear, presets, rangeOut, resolveRange } from '../dates.js';
 import {
-  COLLATION, STATES, cohortFilter, contains, findStudent, flag, iso, lc, oneOf, orgOut, paging, prFilter, prOut, prPage,
-  repoOut, rulesOut, sorting, str, studentMap, studentOut,
+  AGG, activity, allOf, groupStats, monthlySeries, ownerStats, rangeFlags, rangeMatch, repoStats, studentStats, sumIf,
+} from '../ranged.js';
+import {
+  COLLATION, STATES, badRequest, cohortFilter, contains, findStudent, flag, iso, lc, oneOf, orgOut, paging, prFilter, prOut, prPage,
+  prRangeFilter, repoOut, rulesOut, search, sorting, str, studentOut,
 } from './common.js';
 
 const PUBLIC_STUDENT = { username: 1, name: 1, campus: 1, batch: 1, stats: 1 };
-
-// ---------- monthly series ----------
-
-function lastMonths(n, now = new Date()) {
-  const out = [];
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-    out.push(d.toISOString().slice(0, 7));
-  }
-  return { months: out, start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (n - 1), 1)) };
-}
-
-/** 24 calendar months incl. the current one, oldest first, zero-filled (UTC). */
-async function monthly(db, match, now = new Date()) {
-  const { prs } = collections(db);
-  const { months, start } = lastMonths(24, now);
-  const month = (field) => ({ $dateToString: { format: '%Y-%m', date: field } });
-  const [opened, merged] = await Promise.all([
-    prs.aggregate([
-      { $match: { ...match, createdAt: { $gte: start } } },
-      { $group: { _id: month('$createdAt'), allOpened: { $sum: 1 }, osOpened: { $sum: { $cond: [{ $eq: ['$category', 'open_source'] }, 1, 0] } } } },
-    ]).toArray(),
-    prs.aggregate([
-      { $match: { ...match, category: 'open_source', state: 'merged', mergedAt: { $gte: start } } },
-      { $group: { _id: month('$mergedAt'), osMerged: { $sum: 1 } } },
-    ]).toArray(),
-  ]);
-  const o = new Map(opened.map((r) => [r._id, r]));
-  const m = new Map(merged.map((r) => [r._id, r]));
-  return months.map((k) => ({ month: k, osOpened: o.get(k)?.osOpened ?? 0, osMerged: m.get(k)?.osMerged ?? 0, allOpened: o.get(k)?.allOpened ?? 0 }));
-}
+const T = 15000; // maxTimeMS of public finds
+// Query parameters that can change a response; anything else is ignored and must not create new cache entries.
+const KNOWN_PARAMS = ['campus', 'year', 'batch', 'category', 'state', 'tier', 'q', 'from', 'to', 'range', 'sort', 'order', 'page', 'limit',
+  'author', 'repo', 'owner', 'hasOs', 'metric'];
 
 // ---------- campus table ----------
 
@@ -50,11 +33,11 @@ function emptyCampusRow(campus, year, batch) {
   return { campus, year, batch, students: 0, withAnyPr: 0, withOsPr: 0, withOsMerged: 0, withMajorMerged: 0,
     totalPrs: 0, osPrs: 0, osMerged: 0, byCategory: emptyByCategory() };
 }
-function addStudent(row, s) {
-  const st = s.stats || {};
+function addStudent(row, st) {
+  st ||= {};
   row.students++;
-  if (st.totalPrs > 0) row.withAnyPr++;
-  if (st.osPrs > 0) row.withOsPr++;
+  if (st.totalPrs > 0 || st.mergedPrs > 0) row.withAnyPr++;
+  if (st.osPrs > 0 || st.osMerged > 0) row.withOsPr++;
   if (st.osMerged > 0) row.withOsMerged++;
   if (st.osMajorMerged > 0) row.withMajorMerged++;
   row.totalPrs += st.totalPrs || 0;
@@ -63,24 +46,14 @@ function addStudent(row, s) {
   for (const k of CATEGORIES) row.byCategory[k] += st.byCategory?.[k] || 0;
 }
 
-// ---------- student counts within a repo / org ----------
+const collator = new Intl.Collator('en', { sensitivity: 'accent' });
+const time = (d) => (d ? new Date(d).getTime() : 0);
 
-async function contributors(db, match, now) {
-  const { prs, students } = collections(db);
-  const groups = await prs.aggregate([
-    { $match: { active: true, ...match } },
-    { $group: { _id: '$author', prs: { $sum: 1 }, merged: { $sum: { $cond: [{ $eq: ['$state', 'merged'] }, 1, 0] } } } },
-    { $sort: { merged: -1, prs: -1, _id: 1 } },
-    { $limit: 100 },
-  ]).toArray();
-  const docs = await students.find({ _id: { $in: groups.map((g) => g._id) }, active: true }, { projection: PUBLIC_STUDENT }).toArray();
-  const byId = new Map(docs.map((s) => [s._id, s]));
-  return groups.filter((g) => byId.has(g._id)).map((g) => ({ ...studentOut(byId.get(g._id), now), prs: g.prs, merged: g.merged }));
-}
-
-export function publicRouter({ db, auth }) {
+export function publicRouter({ db, auth, config = {}, cache = null }) {
   const r = express.Router();
   const c = collections(db);
+  const tz = config.tzName || TZ;
+  cache ??= createCache({ ttlMs: config.publicCacheMs ?? 0 });
 
   r.get('/health', async (req, res) => {
     res.set('Cache-Control', 'no-store');
@@ -92,64 +65,135 @@ export function publicRouter({ db, auth }) {
     }
   });
 
-  // Public responses are cacheable for a minute; a logged-in admin always gets fresh data (the admin UI refetches right after a change).
+  // Public responses are cacheable for a minute, in the browser / CDN and in this process (identical queries are answered
+  // from memory; the cache is dropped on any admin write and when a job ends). A logged-in admin always gets fresh data.
   r.use((req, res, next) => {
-    if (auth?.isAdmin(req)) res.set('Cache-Control', 'private, no-store');
+    const admin = Boolean(auth?.isAdmin(req));
+    req.isAdmin = admin;
+    if (admin) res.set('Cache-Control', 'private, no-store');
     else res.set('Cache-Control', 'public, max-age=60');
     res.set('Vary', 'Cookie');
+    if (req.method !== 'GET' || admin || !cache.enabled || req.path.startsWith('/export/')) return next();
+    const key = `res:${req.path}?${KNOWN_PARAMS.map((k) => { const v = str(req.query, k); return v ? `${k}=${v}` : ''; }).filter(Boolean).join('&')}`;
+    const hit = cache.get(key);
+    if (typeof hit === 'string') {
+      res.set('X-Cache', 'hit');
+      return res.type('json').send(hit);
+    }
+    const json = res.json.bind(res);
+    res.json = (body) => {
+      if (res.statusCode !== 200) return json(body);
+      const text = JSON.stringify(body);
+      cache.set(key, text);
+      res.set('X-Cache', 'miss');
+      return res.type('json').send(text);
+    };
     next();
   });
 
+  // ---------- ranges ----------
+
+  const academicYear = (now) => cache.memo('ay', () => loadAcademicYear(db, now, tz));
+
+  async function rangeOf(req, now = new Date()) {
+    try {
+      return resolveRange({ from: str(req.query, 'from'), to: str(req.query, 'to'), range: str(req.query, 'range') }, await academicYear(now), now, tz);
+    } catch (e) {
+      if (e instanceof RangeError400) throw badRequest(e.message);
+      throw e;
+    }
+  }
+  const rangeKey = (range) => `${range.from || ''}|${range.to || ''}`;
+  /** Map<id, groupStats row> for the whole dataset in a range, shared by lists, campus table and exports. */
+  const grouped = (by, range) => cache.memo(`g:${by}:${rangeKey(range)}`, () => groupStats(db, { by, range }));
+
   r.get('/meta', async (req, res) => {
     const now = new Date();
-    const [campuses, batches, students, prs, job, lastSynced, rules] = await Promise.all([
+    const [campuses, batches, students, prs, syncJob, importJob, lastSynced, rules, ay, schedule] = await Promise.all([
       c.students.distinct('campus', { active: true }),
       c.students.distinct('batch', { active: true }),
       c.students.countDocuments({ active: true }),
       c.prs.countDocuments({ active: true }),
-      c.jobs.find({ type: { $in: ['sync', 'import'] }, status: 'done' }, { projection: { finishedAt: 1 } }).sort({ finishedAt: -1 }).limit(1).next(),
+      c.jobs.find({ type: 'sync', status: 'done' }, { projection: { finishedAt: 1 } }).sort({ finishedAt: -1 }).limit(1).next(),
+      c.jobs.find({ type: 'import', status: 'done' }, { projection: { finishedAt: 1 } }).sort({ finishedAt: -1 }).limit(1).next(),
       c.students.find({ lastSyncedAt: { $type: 'date' } }, { projection: { lastSyncedAt: 1 } }).sort({ lastSyncedAt: -1 }).limit(1).next(),
       loadRules(db),
+      academicYear(now),
+      c.settings.findOne({ _id: 'schedule' }, { projection: { paused: 1, pausedUntil: 1, enabled: 1 } }),
     ]);
     const labels = new Set(batches.map((b) => yearLabel(b, now)));
+    const paused = Boolean(schedule?.paused) && !(schedule.pausedUntil instanceof Date && schedule.pausedUntil <= now);
     res.json({
       campuses: campuses.filter(Boolean).sort(),
       years: YEAR_LABELS.filter((y) => labels.has(y)),
       batches: batches.filter((b) => Number.isFinite(b)).sort((a, b) => b - a),
       categories: CATEGORIES, tiers: TIERS,
-      lastSyncAt: iso(job?.finishedAt ?? lastSynced?.lastSyncedAt ?? null),
+      // finish time of the last successful sync; before the first sync, the import or the newest per-student fetch time
+      lastSyncAt: iso(syncJob?.finishedAt ?? importJob?.finishedAt ?? lastSynced?.lastSyncedAt ?? null),
+      updatesPaused: paused,
       counts: { students, prs },
       rulesSummary: rulesOut(rules),
+      academicYear: ay, tz, presets: presets(ay, now, tz),
     });
   });
 
+  // ---------- overview ----------
+
   r.get('/overview', async (req, res) => {
     const now = new Date();
+    const range = await rangeOf(req, now);
     const cohort = cohortFilter({ campus: req.query.campus, year: req.query.year }, now);
-    const prMatch = { active: true, ...cohort };
-    const os = { ...prMatch, category: 'open_source' };
+    const hasCohort = Object.keys(cohort).length > 0;
+    const { opened, merged } = rangeFlags(range);
+    const prMatch = allOf({ active: true }, cohort, rangeMatch(range));
     const top = (field) => [
-      { $match: os },
-      { $group: { _id: field, osPrs: { $sum: 1 }, osMerged: { $sum: { $cond: [{ $eq: ['$state', 'merged'] }, 1, 0] } }, students: { $addToSet: '$author' } } },
+      { $match: allOf({ active: true, category: 'open_source' }, cohort, rangeMatch(range)) },
+      { $group: { _id: field, osPrs: sumIf(opened), osMerged: sumIf(merged), students: { $addToSet: '$author' } } },
       { $project: { osPrs: 1, osMerged: 1, students: { $size: '$students' } } },
       { $sort: { osMerged: -1, osPrs: -1, _id: 1 } },
       { $limit: 10 },
     ];
-    const [studentAgg, groups, topRepos, topOrgs, topStudents, series] = await Promise.all([
-      c.students.aggregate([
-        { $match: { active: true, ...cohort } },
-        { $group: { _id: null, tracked: { $sum: 1 },
-          withAnyPr: { $sum: { $cond: [{ $gt: ['$stats.totalPrs', 0] }, 1, 0] } },
-          withOsPr: { $sum: { $cond: [{ $gt: ['$stats.osPrs', 0] }, 1, 0] } },
-          withOsMerged: { $sum: { $cond: [{ $gt: ['$stats.osMerged', 0] }, 1, 0] } },
-          withMajorMerged: { $sum: { $cond: [{ $gt: ['$stats.osMajorMerged', 0] }, 1, 0] } } } },
-      ]).toArray(),
-      c.prs.aggregate([{ $match: prMatch }, { $group: { _id: { c: '$category', s: '$state', t: '$tier' }, n: { $sum: 1 } } }]).toArray(),
-      c.prs.aggregate(top('$repoLc')).toArray(),
-      c.prs.aggregate(top('$ownerLc')).toArray(),
-      c.students.find({ active: true, ...cohort, 'stats.osMerged': { $gt: 0 } }, { projection: PUBLIC_STUDENT })
-        .sort({ 'stats.osMerged': -1, 'stats.osPrs': -1, _id: 1 }).limit(10).toArray(),
-      monthly(db, prMatch, now),
+
+    // per-student numbers: the all-time stats are precomputed, ranged ones come from one $group over the PRs
+    const studentNumbers = async () => {
+      const tracked = await c.students.countDocuments({ active: true, ...cohort }, { maxTimeMS: T });
+      if (range.all) {
+        const [agg, topDocs] = await Promise.all([
+          c.students.aggregate([
+            { $match: { active: true, ...cohort } },
+            { $group: { _id: null,
+              withAnyPr: sumIf({ $gt: ['$stats.totalPrs', 0] }), withOsPr: sumIf({ $gt: ['$stats.osPrs', 0] }),
+              withOsMerged: sumIf({ $gt: ['$stats.osMerged', 0] }), withMajorMerged: sumIf({ $gt: ['$stats.osMajorMerged', 0] }) } },
+          ], AGG).toArray(),
+          c.students.find({ active: true, ...cohort, 'stats.osMerged': { $gt: 0 } }, { projection: PUBLIC_STUDENT })
+            .sort({ 'stats.osMerged': -1, 'stats.osPrs': -1, _id: 1 }).limit(10).maxTimeMS(T).toArray(),
+        ]);
+        const a = agg[0] || {};
+        return { counts: { tracked, withAnyPr: a.withAnyPr ?? 0, withOsPr: a.withOsPr ?? 0, withOsMerged: a.withOsMerged ?? 0, withMajorMerged: a.withMajorMerged ?? 0 },
+          top: topDocs.map((d) => studentOut(d, now)) };
+      }
+      const rows = hasCohort ? await groupStats(db, { by: 'author', range, match: cohort }) : await grouped('author', range);
+      const counts = { tracked, withAnyPr: 0, withOsPr: 0, withOsMerged: 0, withMajorMerged: 0 };
+      const ranked = [];
+      for (const g of rows.values()) {
+        if (g.opened > 0 || g.merged > 0) counts.withAnyPr++;
+        if (g.osOpened > 0 || g.osMerged > 0) counts.withOsPr++;
+        if (g.osMerged > 0) { counts.withOsMerged++; ranked.push(g); }
+        if (g.osMajorMerged > 0) counts.withMajorMerged++;
+      }
+      ranked.sort((a, b) => b.osMerged - a.osMerged || b.osOpened - a.osOpened || (a._id < b._id ? -1 : 1));
+      const best = ranked.slice(0, 10);
+      const docs = await c.students.find({ _id: { $in: best.map((g) => g._id) }, active: true }, { projection: PUBLIC_STUDENT }).toArray();
+      const byId = new Map(docs.map((d) => [d._id, d]));
+      return { counts, top: best.filter((g) => byId.has(g._id)).map((g) => studentOut({ ...byId.get(g._id), stats: studentStats(g) }, now)) };
+    };
+
+    const [studentPart, groups, topRepos, topOrgs, series] = await Promise.all([
+      studentNumbers(),
+      c.prs.aggregate([{ $match: prMatch }, { $group: { _id: { c: '$category', s: '$state', t: '$tier' }, opened: sumIf(opened), merged: sumIf(merged) } }], AGG).toArray(),
+      c.prs.aggregate(top('$repoLc'), AGG).toArray(),
+      c.prs.aggregate(top('$ownerLc'), AGG).toArray(),
+      monthlySeries(db, { match: cohort, range, tz, now }),
     ]);
     const [repoDocs, ownerDocs] = await Promise.all([
       c.repos.find({ _id: { $in: topRepos.map((t) => t._id) } }, { projection: { name: 1, stars: 1, tier: 1 } }).toArray(),
@@ -162,100 +206,150 @@ export function publicRouter({ db, auth }) {
       byState: Object.fromEntries(STATES.map((s) => [s, 0])), osMergedByTier: Object.fromEntries(TIERS.map((t) => [t, 0])) };
     for (const g of groups) {
       const { c: cat, s: state, t: tier } = g._id;
-      prs.total += g.n;
-      if (cat in prs.byCategory) prs.byCategory[cat] += g.n;
-      if (state in prs.byState) prs.byState[state] += g.n;
-      if (state === 'merged') prs.merged += g.n;
+      prs.total += g.opened;
+      prs.merged += g.merged;
+      if (cat in prs.byCategory) prs.byCategory[cat] += g.opened;
+      if (state in prs.byState) prs.byState[state] += g.opened;
       if (cat === 'open_source') {
-        prs.osPrs += g.n;
-        if (state === 'open') prs.osOpen += g.n;
-        if (state === 'merged') {
-          prs.osMerged += g.n;
-          if (tier in prs.osMergedByTier) prs.osMergedByTier[tier] += g.n;
-        }
+        prs.osPrs += g.opened;
+        if (state === 'open') prs.osOpen += g.opened;
+        prs.osMerged += g.merged;
+        if (tier in prs.osMergedByTier) prs.osMergedByTier[tier] += g.merged;
       }
     }
-    const s = studentAgg[0] || {};
     res.json({
+      range: rangeOut(range),
       filters: { campus: str(req.query, 'campus') || null, year: str(req.query, 'year') || null },
-      students: { tracked: s.tracked ?? 0, withAnyPr: s.withAnyPr ?? 0, withOsPr: s.withOsPr ?? 0, withOsMerged: s.withOsMerged ?? 0, withMajorMerged: s.withMajorMerged ?? 0 },
+      students: studentPart.counts,
       prs,
-      topRepos: topRepos.map((t) => ({ name: repoById.get(t._id)?.name ?? t._id, stars: repoById.get(t._id)?.stars ?? 0, tier: repoById.get(t._id)?.tier ?? null,
-        osPrs: t.osPrs, osMerged: t.osMerged, students: t.students })),
-      topOrgs: topOrgs.map((t) => ({ login: ownerById.get(t._id)?.login ?? t._id, osPrs: t.osPrs, osMerged: t.osMerged, students: t.students })),
-      topStudents: topStudents.map((d) => studentOut(d, now)),
+      topRepos: topRepos.filter((t) => t.osPrs > 0 || t.osMerged > 0).map((t) => ({ name: repoById.get(t._id)?.name ?? t._id, stars: repoById.get(t._id)?.stars ?? 0,
+        tier: repoById.get(t._id)?.tier ?? null, osPrs: t.osPrs, osMerged: t.osMerged, students: t.students })),
+      topOrgs: topOrgs.filter((t) => t.osPrs > 0 || t.osMerged > 0).map((t) => ({ login: ownerById.get(t._id)?.login ?? t._id, osPrs: t.osPrs, osMerged: t.osMerged, students: t.students })),
+      topStudents: studentPart.top,
       monthly: series,
     });
   });
 
   r.get('/campuses', async (req, res) => {
     const now = new Date();
+    const range = await rangeOf(req, now);
+    const ranged = range.all ? null : await grouped('author', range);
     const rows = new Map();
     const totals = new Map();
     const total = emptyCampusRow('All', 'All', null);
-    for await (const s of c.students.find({ active: true }, { projection: { campus: 1, batch: 1, stats: 1 } })) {
+    for await (const s of c.students.find({ active: true }, { projection: { campus: 1, batch: 1, ...(ranged ? {} : { stats: 1 }) } }).maxTimeMS(T)) {
       const campus = s.campus || 'Unknown';
       const year = yearLabel(s.batch, now);
       const key = `${campus}\u0000${year}`;
       const batch = Number.isFinite(s.batch) ? s.batch : null;
+      const st = ranged ? (ranged.has(s._id) ? studentStats(ranged.get(s._id)) : null) : s.stats;
       let row = rows.get(key);
-      if (!row) { row = emptyCampusRow(campus, year, batch); rows.set(key, row); } else if (row.batch !== batch) row.batch = null; // several batches share a label (alumni)
+      if (!row) { row = emptyCampusRow(campus, year, batch); rows.set(key, row); } else if (row.batch !== batch) row.batch = null; // several batches share a label
       if (!totals.has(campus)) totals.set(campus, emptyCampusRow(campus, 'All', null));
-      addStudent(row, s);
-      addStudent(totals.get(campus), s);
-      addStudent(total, s);
+      addStudent(row, st);
+      addStudent(totals.get(campus), st);
+      addStudent(total, st);
     }
     const byCampus = (a, b) => (a.campus < b.campus ? -1 : a.campus > b.campus ? 1 : 0);
     res.json({
+      range: rangeOut(range),
       rows: [...rows.values()].sort((a, b) => byCampus(a, b) || YEAR_LABELS.indexOf(a.year) - YEAR_LABELS.indexOf(b.year)),
       totals: [...totals.values()].sort(byCampus),
       total,
     });
   });
 
+  // ---------- activity (addendum A3) ----------
+
+  r.get('/activity', async (req, res) => {
+    const now = new Date();
+    const range = await rangeOf(req, now);
+    const metric = oneOf(req.query, 'metric', ['opened', 'merged'], 'opened');
+    const match = { ...cohortFilter(req.query, now) };
+    const category = oneOf(req.query, 'category', [...CATEGORIES, 'all'], 'open_source');
+    if (category !== 'all') match.category = category;
+    const author = str(req.query, 'author');
+    if (author) match.author = (await findStudent(db, author))?._id ?? lc(author);
+    const repo = str(req.query, 'repo');
+    if (repo) match.repoLc = lc(repo);
+    const owner = str(req.query, 'owner');
+    if (owner) match.ownerLc = lc(owner);
+    const a = await activity(db, { match, range, metric, tz, now });
+    res.json({ range: rangeOut(range), tz, metric, ...a });
+  });
+
   // ---------- students ----------
 
+  const STUDENT_SORTS = ['osMerged', 'osPrs', 'totalPrs', 'name', 'lastPrAt'];
   const STUDENT_SORT = { osMerged: 'stats.osMerged', osPrs: 'stats.osPrs', totalPrs: 'stats.totalPrs', name: 'name', lastPrAt: 'stats.lastPrAt' };
 
   function studentFilter(query) {
     const f = { active: true, ...cohortFilter(query) };
-    const q = str(query, 'q');
+    const q = search(query);
     if (q) f.$or = [{ name: contains(q) }, { username: contains(q) }];
-    if (flag(query, 'hasOs')) f['stats.osPrs'] = { $gt: 0 };
     return f;
+  }
+
+  /** Every student matching the filters with the stats of the range, sorted. Ranged lists are sorted here, not by Mongo. */
+  async function studentRows(query, range, { sort = 'osMerged', dir = -1 } = {}) {
+    const f = studentFilter(query);
+    const hasOs = flag(query, 'hasOs') === true;
+    const ranged = range.all ? null : await grouped('author', range);
+    const docs = await c.students.find(f, { projection: ranged ? { username: 1, name: 1, campus: 1, batch: 1 } : PUBLIC_STUDENT }).maxTimeMS(T).toArray();
+    let rows = docs.map((d) => ({ ...d, stats: ranged ? (ranged.has(d._id) ? studentStats(ranged.get(d._id)) : emptyStudentStats()) : (d.stats || emptyStudentStats()) }));
+    if (hasOs) rows = rows.filter((s) => s.stats.osPrs > 0 || s.stats.osMerged > 0);
+    const value = {
+      osMerged: (s) => s.stats.osMerged, osPrs: (s) => s.stats.osPrs, totalPrs: (s) => s.stats.totalPrs, lastPrAt: (s) => time(s.stats.lastPrAt),
+    }[sort];
+    rows.sort((a, b) => (sort === 'name' ? dir * collator.compare(a.name || '', b.name || '') : dir * (value(a) - value(b)))
+      || b.stats.osPrs - a.stats.osPrs || (a._id < b._id ? -1 : 1));
+    return rows;
   }
 
   r.get('/students', async (req, res) => {
     const { page, limit, skip } = paging(req.query);
-    const { sort, dir } = sorting(req.query, Object.keys(STUDENT_SORT), 'osMerged');
-    const f = studentFilter(req.query);
+    const { sort, dir } = sorting(req.query, STUDENT_SORTS, 'osMerged');
     const now = new Date();
+    const range = await rangeOf(req, now);
+    if (!range.all) {
+      const rows = await studentRows(req.query, range, { sort, dir });
+      return res.json({ range: rangeOut(range), items: rows.slice(skip, skip + limit).map((s) => studentOut(s, now)), total: rows.length, page, limit });
+    }
+    const f = studentFilter(req.query);
+    if (flag(req.query, 'hasOs')) f['stats.osPrs'] = { $gt: 0 };
     const [rows, total] = await Promise.all([
-      c.students.find(f, { projection: PUBLIC_STUDENT }).collation(COLLATION).sort({ [STUDENT_SORT[sort]]: dir, 'stats.osPrs': -1, _id: 1 }).skip(skip).limit(limit).toArray(),
-      c.students.countDocuments(f),
+      c.students.find(f, { projection: PUBLIC_STUDENT }).collation(COLLATION).sort({ [STUDENT_SORT[sort]]: dir, 'stats.osPrs': -1, _id: 1 })
+        .skip(skip).limit(limit).maxTimeMS(T).toArray(),
+      c.students.countDocuments(f, { maxTimeMS: T }),
     ]);
-    res.json({ items: rows.map((s) => studentOut(s, now)), total, page, limit });
+    res.json({ range: rangeOut(range), items: rows.map((s) => studentOut(s, now)), total, page, limit });
   });
 
   r.get('/students/:username', async (req, res) => {
     const s = await findStudent(db, req.params.username);
     if (!s || s.active === false) throw notFound('student not found');
     const now = new Date();
+    const range = await rangeOf(req, now);
+    const admin = req.isAdmin;
+    const { opened, merged } = rangeFlags(range);
     const match = { active: true, author: s._id };
-    const [series, repoGroups, prs] = await Promise.all([
-      monthly(db, match, now),
+    const [ranged, series, repoGroups, prs] = await Promise.all([
+      range.all ? null : groupStats(db, { by: 'author', range, match: { author: s._id } }),
+      monthlySeries(db, { match: { author: s._id }, range, tz, now }),
       c.prs.aggregate([
-        { $match: match },
+        { $match: allOf(match, rangeMatch(range)) },
         { $sort: { createdAt: -1 } },
         { $group: { _id: '$repoLc', name: { $first: '$repo' }, stars: { $first: '$stars' }, category: { $first: '$category' }, tier: { $first: '$tier' },
-          prs: { $sum: 1 }, merged: { $sum: { $cond: [{ $eq: ['$state', 'merged'] }, 1, 0] } }, lastPrAt: { $max: '$createdAt' } } },
+          prs: sumIf(opened), merged: sumIf(merged), lastPrAt: { $max: '$createdAt' } } },
         { $sort: { prs: -1, lastPrAt: -1, _id: 1 } },
         { $limit: 100 },
-      ]).toArray(),
-      prPage(db, match, { page: 1, limit: 25, skip: 0 }),
+      ], AGG).toArray(),
+      prPage(db, allOf(match, prRangeFilter(range)), { page: 1, limit: 25, skip: 0, admin }),
     ]);
+    const stats = ranged ? (ranged.has(s._id) ? studentStats(ranged.get(s._id)) : emptyStudentStats()) : s.stats;
     res.json({
-      student: studentOut(s, now),
+      range: rangeOut(range),
+      student: studentOut({ ...s, stats }, now),
       monthly: series,
       repos: repoGroups.map((g) => ({ name: g.name, stars: g.stars ?? 0, category: g.category, tier: g.tier ?? null, prs: g.prs, merged: g.merged, lastPrAt: iso(g.lastPrAt) })),
       prs,
@@ -269,66 +363,128 @@ export function publicRouter({ db, auth }) {
   r.get('/prs', async (req, res) => {
     const { page, limit, skip } = paging(req.query);
     const { sort, dir } = sorting(req.query, Object.keys(PR_SORT), 'createdAt');
-    const f = await prFilter(db, req.query);
-    if (sort === 'mergedAt' && !f.state) f.mergedAt = { $ne: null };
+    const range = await rangeOf(req);
+    let f = await prFilter(db, req.query, { range });
+    if (sort === 'mergedAt' && !f.state) f = allOf(f, { state: 'merged' });
     const order = { [PR_SORT[sort]]: dir, ...(sort !== 'createdAt' && { createdAt: -1 }), _id: 1 };
-    res.json(await prPage(db, f, { sort: order, page, limit, skip }));
+    res.json({ range: rangeOut(range), ...(await prPage(db, f, { sort: order, page, limit, skip, admin: req.isAdmin })) });
   });
 
   // ---------- repos ----------
 
+  const REPO_SORTS = ['prs', 'merged', 'students', 'stars'];
   const REPO_SORT = { prs: 'stats.prs', merged: 'stats.merged', students: 'stats.students', stars: 'stars' };
+
+  /** Sort + page documents whose `stats` were replaced by ranged ones. */
+  function pageRanged(rows, value, dir, { skip, limit }) {
+    rows.sort((a, b) => dir * (value(a) - value(b)) || b.stats.prs - a.stats.prs || (a._id < b._id ? -1 : 1));
+    return rows.slice(skip, skip + limit);
+  }
 
   r.get('/repos', async (req, res) => {
     const { page, limit, skip } = paging(req.query);
-    const { sort, dir } = sorting(req.query, Object.keys(REPO_SORT), 'prs');
-    const f = { 'stats.prs': { $gt: 0 } };
+    const { sort, dir } = sorting(req.query, REPO_SORTS, 'prs');
+    const range = await rangeOf(req);
+    const f = {};
     const category = oneOf(req.query, 'category', [...CATEGORIES, 'all'], 'open_source');
     if (category !== 'all') f.category = category;
     const tier = oneOf(req.query, 'tier', TIERS);
     if (tier) f.tier = tier;
     const owner = str(req.query, 'owner');
     if (owner) f.ownerLc = lc(owner);
-    const q = str(req.query, 'q');
+    const q = search(req.query);
     if (q) f.$or = [{ name: contains(q) }, { description: contains(q) }];
+    const admin = req.isAdmin;
+    if (!range.all) {
+      const ranged = await grouped('repoLc', range);
+      const docs = await c.repos.find({ ...f, _id: { $in: [...ranged.keys()] } }).maxTimeMS(T).toArray();
+      const rows = docs.map((d) => ({ ...d, stats: repoStats(ranged.get(d._id)) }));
+      const value = sort === 'stars' ? (d) => d.stars ?? 0 : (d) => d.stats[sort];
+      return res.json({ range: rangeOut(range), items: pageRanged(rows, value, dir, { skip, limit }).map((d) => repoOut(d, { admin })), total: rows.length, page, limit });
+    }
+    f['stats.prs'] = { $gt: 0 };
     const [rows, total] = await Promise.all([
-      c.repos.find(f).sort({ [REPO_SORT[sort]]: dir, 'stats.prs': -1, _id: 1 }).skip(skip).limit(limit).toArray(),
-      c.repos.countDocuments(f),
+      c.repos.find(f).sort({ [REPO_SORT[sort]]: dir, 'stats.prs': -1, _id: 1 }).skip(skip).limit(limit).maxTimeMS(T).toArray(),
+      c.repos.countDocuments(f, { maxTimeMS: T }),
     ]);
-    res.json({ items: rows.map(repoOut), total, page, limit });
+    res.json({ range: rangeOut(range), items: rows.map((d) => repoOut(d, { admin })), total, page, limit });
   });
+
+  /** Students of a repo / org with their PR counts there, by merged desc (max 100). */
+  async function contributors(match, range, now) {
+    const { opened, merged } = rangeFlags(range);
+    const groups = await c.prs.aggregate([
+      { $match: allOf({ active: true }, match, rangeMatch(range)) },
+      { $group: { _id: '$author', prs: sumIf(opened), merged: sumIf(merged) } },
+      { $sort: { merged: -1, prs: -1, _id: 1 } },
+      { $limit: 100 },
+    ], AGG).toArray();
+    const ids = groups.map((g) => g._id);
+    const [docs, ranged] = await Promise.all([
+      c.students.find({ _id: { $in: ids }, active: true }, { projection: PUBLIC_STUDENT }).toArray(),
+      range.all ? null : groupStats(db, { by: 'author', range, match: { author: { $in: ids } } }),
+    ]);
+    const byId = new Map(docs.map((s) => [s._id, s]));
+    return groups.filter((g) => byId.has(g._id)).map((g) => {
+      const s = byId.get(g._id);
+      const stats = ranged ? (ranged.has(g._id) ? studentStats(ranged.get(g._id)) : emptyStudentStats()) : s.stats;
+      return { ...studentOut({ ...s, stats }, now), prs: g.prs, merged: g.merged };
+    });
+  }
 
   r.get('/repos/:owner/:name', async (req, res) => {
     const id = lc(`${req.params.owner}/${req.params.name}`);
     const repo = await c.repos.findOne({ _id: id });
     if (!repo || !(repo.stats?.prs > 0)) throw notFound('repo not found');
     const now = new Date();
-    const [owner, students, prs] = await Promise.all([
+    const range = await rangeOf(req, now);
+    const admin = req.isAdmin;
+    const [owner, ranged, ownerRanged, students, prs] = await Promise.all([
       c.owners.findOne({ _id: repo.ownerLc }),
-      contributors(db, { repoLc: id }, now),
-      prPage(db, { active: true, repoLc: id }, { page: 1, limit: 25, skip: 0 }),
+      range.all ? null : groupStats(db, { by: 'repoLc', range, match: { repoLc: id } }),
+      range.all ? null : groupStats(db, { by: 'ownerLc', range, match: { ownerLc: repo.ownerLc } }),
+      contributors({ repoLc: id }, range, now),
+      prPage(db, allOf({ active: true, repoLc: id }, prRangeFilter(range)), { page: 1, limit: 25, skip: 0, admin }),
     ]);
-    res.json({ repo: repoOut(repo), owner: orgOut(owner || { _id: repo.ownerLc, login: repo.owner, type: repo.ownerType }), students, prs });
+    const ownerDoc = owner || { _id: repo.ownerLc, login: repo.owner, type: repo.ownerType };
+    res.json({
+      range: rangeOut(range),
+      repo: repoOut(ranged ? { ...repo, stats: ranged.has(id) ? repoStats(ranged.get(id)) : emptyRepoStats() } : repo, { admin }),
+      owner: orgOut(ownerRanged ? { ...ownerDoc, stats: ownerRanged.has(repo.ownerLc) ? ownerStats(ownerRanged.get(repo.ownerLc)) : emptyOwnerStats() } : ownerDoc, { admin }),
+      students, prs,
+    });
   });
 
   // ---------- orgs ----------
 
+  const ORG_SORTS = ['osMerged', 'osPrs', 'prs', 'students'];
   const ORG_SORT = { osMerged: 'stats.osMerged', osPrs: 'stats.osPrs', prs: 'stats.prs', students: 'stats.students' };
 
   r.get('/orgs', async (req, res) => {
     const { page, limit, skip } = paging(req.query);
-    const { sort, dir } = sorting(req.query, Object.keys(ORG_SORT), 'osMerged');
-    const f = { 'stats.prs': { $gt: 0 } };
+    const { sort, dir } = sorting(req.query, ORG_SORTS, 'osMerged');
+    const range = await rangeOf(req);
     const category = oneOf(req.query, 'category', [...CATEGORIES, 'all'], 'open_source');
+    const q = search(req.query);
+    const admin = req.isAdmin;
+    if (!range.all) {
+      const ranged = await grouped('ownerLc', range);
+      const keep = (st) => (category === 'all' ? true : category === 'open_source' ? st.osPrs > 0 || st.osMerged > 0 : st.byCategory[category] > 0);
+      const stats = new Map();
+      for (const [id, g] of ranged) { const st = ownerStats(g); if (keep(st)) stats.set(id, st); }
+      const docs = await c.owners.find({ _id: { $in: [...stats.keys()] }, ...(q && { login: contains(q) }) }).maxTimeMS(T).toArray();
+      const rows = docs.map((d) => ({ ...d, stats: stats.get(d._id) }));
+      return res.json({ range: rangeOut(range), items: pageRanged(rows, (d) => d.stats[sort], dir, { skip, limit }).map((d) => orgOut(d, { admin })), total: rows.length, page, limit });
+    }
+    const f = { 'stats.prs': { $gt: 0 } };
     if (category === 'open_source') f['stats.osPrs'] = { $gt: 0 };
     else if (category !== 'all') f[`stats.byCategory.${category}`] = { $gt: 0 };
-    const q = str(req.query, 'q');
     if (q) f.login = contains(q);
     const [rows, total] = await Promise.all([
-      c.owners.find(f).sort({ [ORG_SORT[sort]]: dir, 'stats.prs': -1, _id: 1 }).skip(skip).limit(limit).toArray(),
-      c.owners.countDocuments(f),
+      c.owners.find(f).sort({ [ORG_SORT[sort]]: dir, 'stats.prs': -1, _id: 1 }).skip(skip).limit(limit).maxTimeMS(T).toArray(),
+      c.owners.countDocuments(f, { maxTimeMS: T }),
     ]);
-    res.json({ items: rows.map(orgOut), total, page, limit });
+    res.json({ range: rangeOut(range), items: rows.map((d) => orgOut(d, { admin })), total, page, limit });
   });
 
   r.get('/orgs/:login', async (req, res) => {
@@ -336,45 +492,68 @@ export function publicRouter({ db, auth }) {
     const org = await c.owners.findOne({ _id: id });
     if (!org || !(org.stats?.prs > 0)) throw notFound('org not found');
     const now = new Date();
-    const [repos, students] = await Promise.all([
-      c.repos.find({ ownerLc: id, 'stats.prs': { $gt: 0 } }).sort({ 'stats.prs': -1, _id: 1 }).limit(100).toArray(),
-      contributors(db, { ownerLc: id }, now),
-    ]);
-    res.json({ org: orgOut(org), repos: repos.map(repoOut), students });
+    const range = await rangeOf(req, now);
+    const admin = req.isAdmin;
+    let repos;
+    let stats = org.stats;
+    if (range.all) {
+      repos = await c.repos.find({ ownerLc: id, 'stats.prs': { $gt: 0 } }).sort({ 'stats.prs': -1, _id: 1 }).limit(100).toArray();
+    } else {
+      const [own, ranged] = await Promise.all([
+        groupStats(db, { by: 'ownerLc', range, match: { ownerLc: id } }),
+        groupStats(db, { by: 'repoLc', range, match: { ownerLc: id } }),
+      ]);
+      stats = own.has(id) ? ownerStats(own.get(id)) : emptyOwnerStats();
+      const docs = await c.repos.find({ _id: { $in: [...ranged.keys()] } }).toArray();
+      repos = docs.map((d) => ({ ...d, stats: repoStats(ranged.get(d._id)) }))
+        .sort((a, b) => b.stats.prs - a.stats.prs || b.stats.merged - a.stats.merged || (a._id < b._id ? -1 : 1)).slice(0, 100);
+    }
+    res.json({ range: rangeOut(range), org: orgOut({ ...org, stats }, { admin }), repos: repos.map((d) => repoOut(d, { admin })), students: await contributors({ ownerLc: id }, range, now) });
   });
 
   // ---------- CSV exports ----------
 
-  async function streamCsv(res, filename, header, cursor, toRow) {
-    res.set('Content-Type', 'text/csv; charset=utf-8');
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
-    res.write(csvLine(header));
-    let buf = '';
+  let exportsRunning = 0;
+  const maxExports = config.maxConcurrentExports ?? 2;
+
+  /** Streams rows as CSV. At most `maxConcurrentExports` run at once: an export reads a whole collection. */
+  async function streamCsv(res, filename, header, rows, toRow) {
+    if (exportsRunning >= maxExports) {
+      res.set('Retry-After', '5');
+      throw new ApiError(429, 'rate_limited', 'too many exports are running, try again in a few seconds');
+    }
+    exportsRunning++;
     try {
-      for await (const doc of cursor) {
+      res.set('Content-Type', 'text/csv; charset=utf-8');
+      res.set('Content-Disposition', `attachment; filename="${filename}"`);
+      res.write(csvLine(header));
+      let buf = '';
+      for await (const doc of rows) {
         buf += csvLine(toRow(doc));
         if (buf.length > 64 * 1024) {
-          if (!res.write(buf)) await new Promise((resolve) => res.once('drain', resolve));
+          if (!res.write(buf)) await new Promise((resolve) => { res.once('drain', resolve); res.once('close', resolve); });
           buf = '';
           if (res.destroyed) break;
         }
       }
       res.end(buf);
     } catch (e) {
+      if (!res.headersSent) throw e;
       res.destroy(e);
     } finally {
-      await cursor.close().catch(() => {});
+      exportsRunning--;
+      await rows.close?.().catch(() => {});
     }
   }
 
   r.get('/export/students.csv', async (req, res) => {
-    const f = studentFilter(req.query);
     const now = new Date();
-    const cursor = c.students.find(f, { projection: PUBLIC_STUDENT }).sort({ 'stats.osMerged': -1, 'stats.osPrs': -1, _id: 1 });
+    const range = await rangeOf(req, now);
+    const rows = await studentRows(req.query, range);
     await streamCsv(res, 'students.csv',
       ['username', 'name', 'campus', 'batch', 'year', 'total_prs', 'merged_prs', 'os_prs', 'os_merged', 'os_open', 'os_major_merged', 'os_repos', 'os_orgs',
         'practice_prs', 'nst_internal_prs', 'peer_repo_prs', 'own_repo_prs', 'low_signal_prs', 'first_pr_at', 'last_pr_at'],
-      cursor, (d) => {
+      rows, (d) => {
         const s = studentOut(d, now);
         const t = s.stats;
         return [s.username, s.name, s.campus, s.batch, s.year, t.totalPrs, t.mergedPrs, t.osPrs, t.osMerged, t.osOpen, t.osMajorMerged, t.osRepos, t.osOrgs,
@@ -382,16 +561,41 @@ export function publicRouter({ db, auth }) {
       });
   });
 
+  const PR_EXPORT = { url: 1, author: 1, authorLogin: 1, campus: 1, batch: 1, repo: 1, owner: 1, ownerType: 1, stars: 1, title: 1, state: 1, isDraft: 1,
+    createdAt: 1, mergedAt: 1, closedAt: 1, additions: 1, deletions: 1, changedFiles: 1, category: 1, tier: 1, reason: 1 };
+
   r.get('/export/prs.csv', async (req, res) => {
-    const f = await prFilter(db, req.query);
-    const students = await studentMap(db);
+    const range = await rangeOf(req);
+    const f = await prFilter(db, req.query, { range });
     const now = new Date();
-    const cursor = c.prs.find(f).sort({ createdAt: -1, _id: 1 });
+    const cursor = c.prs.find(f, { projection: PR_EXPORT }).sort({ createdAt: -1, _id: 1 }).maxTimeMS(60000);
+    // author names are looked up per batch of rows instead of loading every student for every export
+    const names = new Map();
+    async function* rows() {
+      let batch = [];
+      const flush = async () => {
+        const need = [...new Set(batch.map((p) => p.author))].filter((id) => !names.has(id));
+        if (need.length) {
+          for (const id of need) names.set(id, null);
+          for await (const s of c.students.find({ _id: { $in: need } }, { projection: { username: 1, name: 1 } })) names.set(s._id, s);
+        }
+        const out = batch;
+        batch = [];
+        return out;
+      };
+      for await (const p of cursor) {
+        batch.push(p);
+        if (batch.length >= 1000) yield* await flush();
+      }
+      yield* await flush();
+    }
+    const it = rows();
+    it.close = () => cursor.close();
     await streamCsv(res, 'prs.csv',
       ['url', 'author', 'author_name', 'campus', 'batch', 'year', 'repo', 'owner', 'owner_type', 'stars', 'title', 'state', 'is_draft', 'created_at', 'merged_at',
         'closed_at', 'additions', 'deletions', 'changed_files', 'category', 'tier', 'reason'],
-      cursor, (d) => {
-        const p = prOut(d, students, now);
+      it, (d) => {
+        const p = prOut(d, names, now);
         return [p.url, p.author, p.authorName, p.campus, p.batch, p.year, p.repo, p.owner, p.ownerType, p.stars, p.title, p.state, p.isDraft, p.createdAt, p.mergedAt,
           p.closedAt, p.additions, p.deletions, p.changedFiles, p.category, p.tier, p.reason];
       });

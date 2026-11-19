@@ -26,9 +26,9 @@ const PAGE_PAUSE_MS = 300;
 const REQUEST_TIMEOUT_MS = 90_000;
 const MAX_RATE_SLEEP_MS = 65 * 60 * 1000;
 
-// Same fields as legacy/fetch_prs.py, plus updatedAt and the author's login / databaseId.
+// Same fields as legacy/fetch_prs.py, plus updatedAt, the PR's databaseId (stable across repo renames) and the author's login / databaseId.
 export const PR_FIELDS = `issueCount pageInfo{hasNextPage endCursor}
- nodes{... on PullRequest{url number title state isDraft createdAt updatedAt mergedAt closedAt additions deletions changedFiles
+ nodes{... on PullRequest{databaseId url number title state isDraft createdAt updatedAt mergedAt closedAt additions deletions changedFiles
   author{login ... on User{databaseId}}
   comments{totalCount} reviews{totalCount}
   repository{nameWithOwner isFork isArchived isPrivate stargazerCount forkCount description createdAt

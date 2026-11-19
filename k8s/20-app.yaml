@@ -1,5 +1,6 @@
 # Web app: public dashboard + admin area + in-process job runner.
-# replicas must stay 1 (the job runner and the login rate limit live in the process), hence strategy Recreate.
+# replicas must stay 1 (the job runner, the scheduler of the nightly fetch, the rate limits and the response cache live
+# in the process), hence strategy Recreate.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,13 +21,17 @@ spec:
       labels:
         app.kubernetes.io/name: oss-status
         app.kubernetes.io/part-of: oss-status
+        oss-status/mongo-client: "true"     # admitted by the mongo NetworkPolicy
     spec:
       terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false   # the app never talks to the Kubernetes API
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000       # `node` user of the image
         runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: app
           image: registry.nstsdc.org:5000/oss-status   # tag is set in kustomization.yaml
@@ -36,18 +41,23 @@ spec:
               containerPort: 3000
           envFrom:
             - secretRef:
-                name: oss-status-secrets   # ADMIN_PASSWORD, SESSION_SECRET, GITHUB_TOKEN
+                name: oss-status-secrets   # ADMIN_PASSWORD, SESSION_SECRET, GITHUB_TOKEN, MONGODB_URI (with the app user's password)
           env:
             - name: PORT
               value: "3000"
-            - name: MONGODB_URI
-              value: mongodb://mongo:27017
             - name: MONGODB_DB
               value: oss_status
             - name: NODE_ENV
               value: production
             - name: TRUST_PROXY
               value: "1"
+            # Cloudflare -> Traefik -> app: the visitor's address is in CF-Connecting-IP (Cloudflare sets and overwrites
+            # it). The login and request limits are keyed on it; without it every visitor would share one bucket.
+            # The header is believed only when the TCP peer is a private address (the ingress).
+            - name: CLIENT_IP_HEADER
+              value: CF-Connecting-IP
+            - name: TZ_NAME
+              value: Asia/Kolkata
           startupProbe:
             httpGet:
               path: /api/health
@@ -102,3 +112,42 @@ spec:
     - name: http
       port: 80
       targetPort: http
+---
+# The app (and the Jobs that reuse its image) may talk to MongoDB, DNS and HTTPS on the internet (api.github.com), and
+# to nothing else in the cluster: a compromised pod cannot reach other workloads or the Kubernetes API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oss-status-egress
+  namespace: oss-status
+  labels:
+    app.kubernetes.io/part-of: oss-status
+spec:
+  podSelector:
+    matchLabels:
+      oss-status/mongo-client: "true"
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mongo
+      ports:
+        - protocol: TCP
+          port: 27017
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+      ports:
+        - protocol: TCP
+          port: 443

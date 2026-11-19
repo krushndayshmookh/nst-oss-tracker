@@ -9,13 +9,19 @@ import { ensureRules } from './rules.js';
 import { publicRouter } from './routes/public.js';
 import { adminRouter } from './routes/admin.js';
 import { startRunner } from './jobs.js';
+import { createCache } from './cache.js';
+import { clientIp, createRateLimiter } from './limits.js';
+import { ensureAcademicYear } from './dates.js';
+
+const CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data:", "connect-src 'self'",
+  "font-src 'self'", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'", "form-action 'self'"].join('; ');
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
-export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, github = null } = {}) {
+export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, github = null, authOptions = undefined } = {}) {
   const app = express();
-  const auth = createAuth(config);
+  const auth = createAuth(config, authOptions);
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy ?? 1);
   app.set('etag', 'weak');
@@ -25,12 +31,32 @@ export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, g
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.set('X-Frame-Options', 'DENY');
+    // The pages load only their own scripts and never build HTML from API text; the policy contains a future slip.
+    res.set('Content-Security-Policy', CSP);
+    if (config.production) res.set('Strict-Transport-Security', 'max-age=31536000');
     next();
   });
 
-  app.use('/api', express.json({ limit: '5mb' }));
+  // Per-visitor request budgets (in memory, replicas: 1). A logged-in admin and the health probes are not limited.
+  const general = createRateLimiter({ limit: config.rateLimitPerMin ?? 0 });
+  const exportsLimit = createRateLimiter({ limit: config.exportLimitPerMin ?? 0 });
+  app.use('/api', (req, res, next) => {
+    if (req.path === '/health' || auth.isAdmin(req)) return next();
+    const ip = clientIp(req, config);
+    let verdict = general.take(ip);
+    if (verdict.ok && req.path.startsWith('/export/')) verdict = exportsLimit.take(ip);
+    if (verdict.ok) return next();
+    res.set('Retry-After', String(verdict.retryAfter));
+    next(new ApiError(429, 'rate_limited', 'too many requests, slow down'));
+  });
+
+  // Only the admin API reads request bodies. Bodies are small, except the bulk CSV upload of a logged-in admin.
+  const smallJson = express.json({ limit: '100kb' });
+  const bulkJson = express.json({ limit: '5mb' });
+  app.use('/api/admin', (req, res, next) => (req.path === '/students/bulk' && auth.isAdmin(req) ? bulkJson : smallJson)(req, res, next));
+  const cache = createCache({ ttlMs: config.publicCacheMs ?? 0 });
   app.use('/api/admin', adminRouter({ db, config, auth, github }));
-  app.use('/api', publicRouter({ db, config, auth }));
+  app.use('/api', publicRouter({ db, config, auth, cache }));
   app.use('/api', (req, res, next) => next(new ApiError(404, 'not_found', `no such endpoint: ${req.method} ${req.baseUrl}${req.path}`)));
 
   app.get('/admin', (req, res, next) => {
@@ -68,7 +94,7 @@ export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, g
     }
     if (!req.originalUrl.startsWith('/api')) return res.status(status).type('text/plain').send(message);
     res.set('Cache-Control', 'no-store');
-    res.status(status).json({ error: { code, message } });
+    res.status(status).json({ error: { code, message, ...(err instanceof ApiError && err.extra ? err.extra : {}) } });
   });
 
   return app;
@@ -77,19 +103,26 @@ export function createApp({ db, config = loadConfig(), publicDir = PUBLIC_DIR, g
 async function main() {
   const config = loadConfig();
   if (config.production) {
-    if (!config.adminPassword) console.warn('WARNING: ADMIN_PASSWORD is unset: the admin API answers 503 until it is set');
-    if (!config.sessionSecretSet) console.warn('WARNING: SESSION_SECRET is unset: admin sessions will not survive a restart');
+    // Weak or placeholder secrets never open the admin area: it answers 503 until they are fixed. The public site still runs.
+    if (config.adminProblem) console.warn(`WARNING: the admin area is closed: ${config.adminProblem}`);
   }
   const { client, db } = await connect(config);
   await ensureIndexes(db);
   await ensureRules(db);
+  await ensureAcademicYear(db);
   const app = createApp({ db, config });
   const server = app.listen(config.port, () => {
     console.log(`oss-status listening on :${config.port} (db ${config.mongoDb}, ${config.nodeEnv})`);
   });
   await startRunner(db);
+  let scheduler = null;
+  if (config.schedulerEnabled) {
+    const { startScheduler } = await import('./scheduler.js');
+    scheduler = await startScheduler(db, { tz: config.tzName, concurrency: config.syncConcurrency });
+  }
   const shutdown = (signal) => {
     console.log(`${signal}: shutting down`);
+    scheduler?.stop();
     server.close(() => client.close().finally(() => process.exit(0)));
     setTimeout(() => process.exit(0), 10000).unref();
   };

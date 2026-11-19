@@ -110,8 +110,17 @@ test('health, meta, 404 and validation errors', async () => {
 });
 
 test('overview', async () => {
-  const { status, body } = await app.get('/api/overview');
+  // no range given -> the current academic year (every fixture PR is inside it), with the months of that year so far
+  const ay = await app.get('/api/overview');
+  assert.equal(ay.body.range.preset, 'ay');
+  assert.match(ay.body.range.label, /^AY \d{4}-\d{2}$/);
+  assert.ok(ay.body.monthly.length >= 1 && ay.body.monthly.length <= 12);
+  assert.equal(ay.body.monthly[0].month.slice(5), '07');
+  const { status, body } = await app.get('/api/overview?range=all');
   assert.equal(status, 200);
+  assert.deepEqual(body.range, { from: null, to: null, label: 'All time', preset: 'all' });
+  assert.deepEqual([ay.body.students, ay.body.prs, ay.body.topRepos, ay.body.topOrgs, ay.body.topStudents.map((s) => s.username)],
+    [body.students, body.prs, body.topRepos, body.topOrgs, body.topStudents.map((s) => s.username)], 'ranged pipelines agree with the all-time stats');
   assert.deepEqual(body.filters, { campus: null, year: null });
   assert.deepEqual(body.students, { tracked: 3, withAnyPr: 2, withOsPr: 2, withOsMerged: 2, withMajorMerged: 2 });
   assert.deepEqual(body.prs, {
@@ -173,10 +182,13 @@ test('students list + profile', async () => {
   assert.equal((await app.get('/api/students?q=.*')).body.total, 0, 'q is a literal substring, not a regex');
 
   const prof = (await app.get('/api/students/ALICE')).body;
-  assert.deepEqual(Object.keys(prof), ['student', 'monthly', 'repos', 'prs']);
+  assert.deepEqual(Object.keys(prof), ['range', 'student', 'monthly', 'repos', 'prs']);
   assert.equal(prof.student.username, 'Alice');
-  assert.equal(prof.monthly.length, 24);
+  assert.equal(prof.range.preset, 'ay');
   assert.equal(prof.monthly.reduce((a, m) => a + m.allOpened, 0), 7);
+  const profAll = (await app.get('/api/students/ALICE?range=all')).body;
+  assert.equal(profAll.monthly.length, 24);
+  assert.deepEqual(profAll.student, prof.student, 'every fixture PR is inside the academic year');
   assert.equal(prof.repos.length, 6);
   assert.deepEqual({ ...prof.repos[0], lastPrAt: null }, { name: 'apache/airflow', stars: 5000, category: 'open_source', tier: 'major', prs: 2, merged: 1, lastPrAt: null });
   assert.equal(prof.repos.find((r) => r.name === 'Alice/site').category, 'own_repo');
@@ -227,7 +239,7 @@ test('repos and orgs', async () => {
   assert.deepEqual((await app.get('/api/repos?category=all&sort=stars&limit=1')).body.items.map((r) => r.name), ['firstcontributions/first-contributions']);
 
   const repo = (await app.get('/api/repos/APACHE/Airflow')).body;
-  assert.deepEqual(Object.keys(repo), ['repo', 'owner', 'students', 'prs']);
+  assert.deepEqual(Object.keys(repo), ['range', 'repo', 'owner', 'students', 'prs']);
   assert.equal(repo.repo.name, 'apache/airflow');
   assert.equal(repo.owner.login, 'apache');
   assert.deepEqual(repo.students.map((s) => [s.username, s.prs, s.merged]), [['Alice', 2, 1], ['Bob', 1, 1]]);
@@ -241,7 +253,7 @@ test('repos and orgs', async () => {
   assert.equal((await app.get('/api/orgs?category=all')).body.total, 7);
   assert.deepEqual((await app.get('/api/orgs?category=all&q=NST')).body.items.map((o) => o.login), ['nst-sdc']);
   const org = (await app.get('/api/orgs/Apache')).body;
-  assert.deepEqual(Object.keys(org), ['org', 'repos', 'students']);
+  assert.deepEqual(Object.keys(org), ['range', 'org', 'repos', 'students']);
   assert.deepEqual([org.org.login, org.repos.length, org.students.length], ['apache', 1, 2]);
   assert.equal((await app.get('/api/orgs/nobody')).status, 404);
 });
@@ -330,9 +342,12 @@ test('admin auth: 401 without cookie, 403 without CSRF header, login, logout', a
 });
 
 test('admin auth: Secure cookie in production, 503 when ADMIN_PASSWORD is unset, rate limit', async () => {
-  const prod = await startApp(db, { production: true });
+  const strong = 'f'.repeat(16) + '0123456789abcdef';
+  const prod = await startApp(db, { production: true, sessionSecret: strong, sessionSecretSet: true });
   try {
-    assert.match((await prod.login()).headers.get('set-cookie'), /; Secure$/);
+    const res = await prod.login();
+    assert.match(res.headers.get('set-cookie'), /; Secure$/);
+    assert.equal(res.headers.get('strict-transport-security'), 'max-age=31536000');
   } finally { await prod.close(); }
 
   const off = await startApp(db, { adminPassword: '' });
@@ -362,7 +377,7 @@ test('admin students: list, add, bulk add, edit, deactivate, purge, backfill', a
   assert.equal(list.total, 4, 'includes inactive students');
   const alice = list.items.find((s) => s.username === 'Alice');
   assert.deepEqual(Object.keys(alice), ['username', 'name', 'campus', 'batch', 'year', 'stats', 'githubId', 'nameSource', 'email', 'enrolmentNo', 'sources', 'notes', 'active',
-    'backfill', 'lastSyncedAt', 'addedAt', 'addedBy']);
+    'backfill', 'lastSyncedAt', 'addedAt', 'addedBy'].toSpliced(6, 0, 'unresolvedSince', 'missing'));
   assert.deepEqual([alice.email, alice.enrolmentNo, alice.sources, alice.notes, alice.backfill.status, alice.backfill.error], ['alice@private.example', 'ENR-ALICE-001', ['test sheet'], 'private note', 'done', null]);
   assert.deepEqual((await app.get('/api/admin/students?active=0')).body.items.map((s) => s.username), ['dave']);
   assert.deepEqual((await app.get('/api/admin/students?q=enr-alice')).body.items.map((s) => s.username), ['Alice']);
@@ -397,11 +412,11 @@ test('admin students: list, add, bulk add, edit, deactivate, purge, backfill', a
   assert.deepEqual([dup.status, dup.body.error.code], [409, 'conflict']);
 
   // bulk
-  const bulk = await app.post('/api/admin/students/bulk', { csv: 'campus,batch,name,github_username,email\nRU,2026,New One,new-one,n1@x.example\nRU,2026,Dup,ALICE,\nRU,2026,No Login,,\nMars,2026,Bad Campus,badcampus,\n,,,https://github.com/New-Two,\nRU,2026,Again,new-one,\n' });
+  const bulk = await app.post('/api/admin/students/bulk', { csv: 'campus,batch,name,github_username,email\nRU,2026,New One,new-one,n1@x.example\nRU,2025,Alice Anand,ALICE,\nRU,2026,No Login,,\nMars,2026,Bad Campus,badcampus,\n,,,https://github.com/New-Two,\nRU,2026,Again,new-one,\n' });
   assert.equal(bulk.status, 200);
   assert.deepEqual(bulk.body.results, [
     { row: 1, username: 'new-one', status: 'added', error: null },
-    { row: 2, username: 'ALICE', status: 'exists', error: null },
+    { row: 2, username: 'Alice', status: 'exists', error: null },
     { row: 3, username: '', status: 'invalid', error: 'github_username required' },
     { row: 4, username: 'badcampus', status: 'invalid', error: 'invalid campus: expected one of ADYPU, RU, SVYASA, SMRU, Unknown' },
     { row: 5, username: 'New-Two', status: 'added', error: null },
@@ -601,23 +616,23 @@ test('admin jobs: list, detail, sync, reclassify', async () => {
   const re = await app.post('/api/admin/jobs/reclassify', {});
   assert.equal(re.status, 202);
   await whenIdle(db);
-  assert.deepEqual(syncs.at(-1), { users: ['Alice'], full: true });
+  assert.deepEqual(syncs.at(-1), { trigger: 'manual', users: ['Alice'], full: true, concurrency: 6 });
   await app.post('/api/admin/jobs/sync', {});
   await whenIdle(db);
-  assert.deepEqual(syncs.at(-1), { full: false });
+  assert.deepEqual(syncs.at(-1), { trigger: 'manual', full: false, concurrency: 6 });
   assert.equal((await app.post('/api/admin/jobs/sync', { users: 'alice' })).status, 400);
   assert.equal((await app.post('/api/admin/jobs/sync', { full: 'yes' })).status, 400);
 
   const list = (await app.get('/api/admin/jobs')).body;
   assert.ok(list.total >= 3);
-  assert.deepEqual(Object.keys(list.items[0]), ['id', 'type', 'runner', 'status', 'params', 'createdAt', 'startedAt', 'finishedAt', 'progress', 'summary', 'error']);
+  assert.deepEqual(Object.keys(list.items[0]), ['id', 'type', 'runner', 'status', 'params', 'createdAt', 'startedAt', 'finishedAt', 'progress', 'summary', 'error', 'cancelRequested']);
   assert.ok(list.items.every((j, i, arr) => i === 0 || arr[i - 1].createdAt >= j.createdAt), 'newest first');
   assert.ok(list.items.every((j) => !('log' in j)));
   assert.ok((await app.get('/api/admin/jobs?type=sync')).body.items.every((j) => j.type === 'sync'));
   assert.equal((await app.get('/api/admin/jobs?status=queued')).body.total, 0);
   assert.equal((await app.get('/api/admin/jobs?type=nope')).status, 400);
   const detail = (await app.get(`/api/admin/jobs/${sync.body.job.id}`)).body.job;
-  assert.deepEqual([detail.id, detail.type, detail.status, detail.params, Array.isArray(detail.log)], [sync.body.job.id, 'sync', 'done', { users: ['Alice'], full: true }, true]);
+  assert.deepEqual([detail.id, detail.type, detail.status, detail.params, Array.isArray(detail.log)], [sync.body.job.id, 'sync', 'done', { trigger: 'manual', users: ['Alice'], full: true, concurrency: 6 }, true]);
   assert.deepEqual(detail.summary, { students: 0, ok: 0, failed: 0, prs: 0, renamed: 0, notFound: 0 });
   assert.equal((await app.get('/api/admin/jobs/ffffffffffff')).status, 404);
   // meta.lastSyncAt = finishedAt of the latest finished sync job

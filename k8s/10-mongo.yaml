@@ -1,6 +1,28 @@
 # MongoDB 7, single node, data on a 5Gi Longhorn volume.
-# No authentication is configured: the database is reachable only from pods in this namespace
-# (headless ClusterIP service + NetworkPolicy below). Do not expose it through an Ingress or NodePort.
+#
+# Authentication is ON. The database holds student e-mail addresses and enrolment numbers, and the cluster is shared,
+# so two independent barriers protect it:
+#   1. credentials: a root user (Secret `oss-status-mongo`, used only by this pod and for maintenance) and a
+#      least-privilege user `oss_status` (readWrite on the `oss_status` database only) that the app connects with;
+#   2. a NetworkPolicy that admits only pods labelled `oss-status/mongo-client: "true"` in this namespace.
+# The users are created by the image's init scripts, which run ONLY when /data/db is empty (first start of a new
+# volume). For a volume that was initialised without auth, see README "Enabling MongoDB authentication on existing data".
+# Do not expose the Service through an Ingress or NodePort.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongo-init
+  namespace: oss-status
+  labels:
+    app.kubernetes.io/name: mongo
+    app.kubernetes.io/part-of: oss-status
+data:
+  10-app-user.js: |
+    // Runs once, as root, on the first start of an empty volume (docker-entrypoint-initdb.d).
+    const pwd = process.env.MONGO_APP_PASSWORD;
+    if (!pwd) throw new Error('MONGO_APP_PASSWORD is not set (Secret oss-status-mongo)');
+    db.getSiblingDB('oss_status').createUser({ user: 'oss_status', pwd, roles: [{ role: 'readWrite', db: 'oss_status' }] });
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -39,21 +61,43 @@ spec:
         app.kubernetes.io/part-of: oss-status
     spec:
       terminationGracePeriodSeconds: 60
+      automountServiceAccountToken: false   # the pod never talks to the Kubernetes API
       securityContext:
         runAsNonRoot: true
         runAsUser: 999        # `mongodb` user of the official image
         runAsGroup: 999
         fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: mongo
-          image: mongo:7
+          # Pinned to a patch release: a floating tag (mongo:7) lets a pod restart change the database binary.
+          # Upgrade on purpose by editing this line; pinning the digest (mongo:7.0.28@sha256:...) is stricter still.
+          image: mongo:7.0.28
+          # With MONGO_INITDB_ROOT_USERNAME set, the image's entrypoint starts mongod with --auth.
           args: ["--bind_ip_all", "--wiredTigerCacheSizeGB", "0.5"]
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: root
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: oss-status-mongo
+                  key: MONGO_ROOT_PASSWORD
+            - name: MONGO_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: oss-status-mongo
+                  key: MONGO_APP_PASSWORD
           ports:
             - name: mongo
               containerPort: 27017
           volumeMounts:
             - name: data
               mountPath: /data/db
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -79,6 +123,10 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: init
+          configMap:
+            name: mongo-init
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -92,7 +140,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: mongo-namespace-only
+  name: mongo-clients-only
   namespace: oss-status
   labels:
     app.kubernetes.io/part-of: oss-status
@@ -103,7 +151,10 @@ spec:
   policyTypes: ["Ingress"]
   ingress:
     - from:
-        - podSelector: {}     # any pod in this namespace, nothing from other namespaces
+        # only the app, the import Job and manual sync Jobs carry this label; nothing from other namespaces
+        - podSelector:
+            matchLabels:
+              oss-status/mongo-client: "true"
       ports:
         - protocol: TCP
           port: 27017

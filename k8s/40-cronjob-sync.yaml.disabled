@@ -1,0 +1,72 @@
+# DISABLED (SPEC addendum C): the nightly fetch is scheduled INSIDE the app now and is managed from the admin UI
+# (Admin -> Jobs -> "Scheduled fetch": time of day, pause / resume, fetch now, full refresh, cancel). This file is
+# kept for reference only and is not part of kustomization.yaml. Do not apply it next to the in-app scheduler: both
+# would fetch every student every night. `node scripts/sync.js` still works for manual runs.
+#
+# If the CronJob was applied by an earlier version, remove it:  kubectl -n oss-status delete cronjob oss-status-sync
+#
+# Daily fetch of new / updated PRs for every active student: 21:00 UTC = 02:30 IST.
+# Same image, env and secret as the app. The run is recorded in the `jobs` collection (runner "cli") and shows up
+# on the admin Jobs page. Run it by hand with:
+#   kubectl -n oss-status create job --from=cronjob/oss-status-sync sync-manual-$(date +%s)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: oss-status-sync
+  namespace: oss-status
+  labels:
+    app.kubernetes.io/name: oss-status-sync
+    app.kubernetes.io/part-of: oss-status
+spec:
+  schedule: "0 21 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 10800
+      backoffLimit: 0           # a failed run is not retried; the next night picks up from each student's lastSyncedAt
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: oss-status-sync
+            app.kubernetes.io/part-of: oss-status
+            oss-status/mongo-client: "true"
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+          containers:
+            - name: sync
+              image: registry.nstsdc.org:5000/oss-status   # tag is set in kustomization.yaml
+              imagePullPolicy: IfNotPresent
+              command: ["node", "scripts/sync.js"]
+              envFrom:
+                - secretRef:
+                    name: oss-status-secrets
+              env:
+                - name: MONGODB_URI
+                  value: mongodb://mongo:27017
+                - name: MONGODB_DB
+                  value: oss_status
+                - name: NODE_ENV
+                  value: production
+                - name: TRUST_PROXY
+                  value: "1"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]

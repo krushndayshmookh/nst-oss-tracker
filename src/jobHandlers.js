@@ -7,7 +7,7 @@
 // A 4th argument injects the GitHub side for tests: { fetch, token, sleep, now, concurrency, github }.
 import { collections } from './db.js';
 import { invalidateContext, reclassify } from './classify.js';
-import { refreshAggregates, upsertPRs } from './ingest.js';
+import { pruneStalePRs, refreshAggregates, upsertPRs } from './ingest.js';
 import * as defaultGithub from './github.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -69,7 +69,9 @@ function appendNote(notes, line) {
 async function applyRename(env, student, newLogin) {
   const old = student.username;
   const at = env.now();
-  const notes = appendNote(student.notes, `[${at.toISOString().slice(0, 10)}] GitHub login changed: ${old} -> ${newLogin}`);
+  // the notes are re-read: an admin may have edited them since this run loaded its students
+  const fresh = await env.c.students.findOne({ _id: student._id }, { projection: { notes: 1 } });
+  const notes = appendNote(fresh ? fresh.notes : student.notes, `[${at.toISOString().slice(0, 10)}] GitHub login changed: ${old} -> ${newLogin}`);
   await env.c.students.updateOne({ _id: student._id }, { $set: { username: newLogin, notes, loginCheckedAt: at }, $unset: { unresolvedSince: '' } });
   student.username = newLogin;
   student.notes = notes;
@@ -111,7 +113,11 @@ async function checkLogin(env, student) {
   return 'same';
 }
 
-/** Splits fetched nodes into what has to be written. Incremental runs drop PRs whose updatedAt is unchanged. */
+/**
+ * Looks at fetched nodes next to what is stored: `pub` = the public, de-duplicated nodes (all of them are written, so
+ * that the repository's fresh stars / fork / archive flags are never thrown away with an unchanged PR), `changed` = the
+ * new or updated ones (for the run's numbers).
+ */
 async function diffNodes(env, nodes, { full }) {
   const pub = [];
   const seen = new Set();
@@ -126,7 +132,7 @@ async function diffNodes(env, nodes, { full }) {
     const rows = await env.c.prs.find({ _id: { $in: urls.slice(i, i + 5000) } }, { projection: { state: 1, updatedAt: 1 } }).toArray();
     for (const r of rows) existing.set(r._id, r);
   }
-  const out = { changed: [], prsNew: 0, prsUpdated: 0, newMerged: 0 };
+  const out = { pub, changed: [], prsNew: 0, prsUpdated: 0, newMerged: 0 };
   for (const n of pub) {
     const before = existing.get(n.url);
     if (!before) {
@@ -154,14 +160,42 @@ async function processStudent(env, student, { full }) {
   const r = { outcome: 'ok', prs: 0, prsNew: 0, prsUpdated: 0, newMerged: 0, renamed: 0, error: '', fatal: false, rateLimit: null };
   let loginChecked = false;
 
-  // periodic rename check (at most once per LOGIN_CHECK_DAYS)
-  if (student.githubId) {
-    const last = student.loginCheckedAt ? new Date(student.loginCheckedAt).getTime() : 0;
-    if (env.now().getTime() - last >= LOGIN_CHECK_DAYS * DAY_MS) {
-      const res = await checkLogin(env, student);
-      loginChecked = res !== 'unknown';
-      if (res === 'renamed') { r.renamed = 1; full = true; }
-      if (res === 'gone') full = true; // the full fetch below confirms it and marks the student not_found
+  // periodic account check (at most once per LOGIN_CHECK_DAYS)
+  const lastCheck = student.loginCheckedAt ? new Date(student.loginCheckedAt).getTime() : 0;
+  const checkDue = env.now().getTime() - lastCheck >= LOGIN_CHECK_DAYS * DAY_MS;
+  if (student.githubId && checkDue) {
+    const res = await checkLogin(env, student);
+    loginChecked = res !== 'unknown';
+    if (res === 'renamed') { r.renamed = 1; full = true; }
+    if (res === 'gone') full = true; // the full fetch below confirms it and marks the student not_found
+  } else if (!student.githubId && checkDue) {
+    // No id yet (every imported student starts like this): a search for a login that was renamed or deleted silently
+    // returns 0 PRs forever, so the login itself is looked up. Found -> remember the id (renames are detected from
+    // then on); 404 -> flag the student instead of "syncing" nothing every night.
+    let user;
+    let checked = true;
+    try {
+      user = await github.getUser(student.username, env.gh);
+    } catch (e) {
+      checked = false;
+      env.log(`${student._id}: could not verify the account: ${e?.message || e}`);
+    }
+    if (checked) {
+      const at = env.now();
+      loginChecked = true;
+      student.loginCheckedAt = at;
+      if (!user) {
+        const set = { loginCheckedAt: at, backfill: { status: 'error', at, error: 'not_found' } };
+        if (!student.unresolvedSince) { set.unresolvedSince = at; student.unresolvedSince = at; }
+        await c.students.updateOne({ _id: student._id }, { $set: set });
+        r.outcome = 'notFound';
+        r.error = 'not_found';
+        return r;
+      }
+      const set = { loginCheckedAt: at };
+      if (Number.isFinite(user.id)) { set.githubId = user.id; student.githubId = user.id; }
+      await c.students.updateOne({ _id: student._id }, { $set: set, $unset: { unresolvedSince: '' } });
+      delete student.unresolvedSince;
     }
   }
 
@@ -175,9 +209,32 @@ async function processStudent(env, student, { full }) {
 
     // keep whatever was fetched, also when the result is partial
     const diff = await diffNodes(env, res.nodes || [], { full });
-    if (diff.changed.length) {
-      const up = await upsertPRs(env.db, student, diff.changed);
-      r.prs += up.prs;
+    if (diff.pub.length) {
+      // The run loaded its students when it started, possibly hours ago. campus / batch / active are denormalised onto
+      // the PRs, so they are taken from the student as stored NOW, and checked once more after the write: an admin
+      // edit, deactivation or purge made while the run is in flight must win.
+      const current = () => c.students.findOne({ _id: student._id }, { projection: { campus: 1, batch: 1, active: 1, githubId: 1 } });
+      const before = await current();
+      if (!before) {
+        env.log(`${student._id}: removed while the run was in flight, nothing saved`);
+        return r;
+      }
+      Object.assign(student, { campus: before.campus, batch: before.batch ?? null, active: before.active !== false });
+      if (before.githubId && !student.githubId) student.githubId = before.githubId;
+      await upsertPRs(env.db, student, diff.pub, { onlyUrls: new Set(diff.changed.map((n) => n.url)) });
+      const after = await current();
+      if (!after) {
+        await c.prs.deleteMany({ author: student._id });
+        env.log(`${student._id}: removed while the run was in flight, nothing saved`);
+        return r;
+      }
+      const same = (after.campus ?? 'Unknown') === (student.campus ?? 'Unknown') && (after.batch ?? null) === (student.batch ?? null)
+        && (after.active !== false) === (student.active !== false);
+      if (!same) {
+        Object.assign(student, { campus: after.campus, batch: after.batch ?? null, active: after.active !== false });
+        await c.prs.updateMany({ author: student._id }, { $set: { campus: after.campus ?? 'Unknown', batch: after.batch ?? null, active: after.active !== false } });
+      }
+      r.prs += diff.changed.length;
       r.prsNew += diff.prsNew; r.prsUpdated += diff.prsUpdated; r.newMerged += diff.newMerged;
     }
 
@@ -219,6 +276,22 @@ async function processStudent(env, student, { full }) {
       }
     }
 
+    if (full) {
+      // A complete full fetch is the whole truth about this student: PRs stored under urls GitHub no longer returns
+      // (repo renamed / transferred / deleted / made private, account renamed) would otherwise be counted twice or forever.
+      const expected = Number(res.count);
+      const complete = !Number.isFinite(expected) || diff.pub.length >= expected - Math.max(3, Math.ceil(expected * 0.05));
+      if (!complete) env.log(`${student._id}: GitHub reported ${expected} PRs but returned ${diff.pub.length}: stale PRs are not removed in this run`);
+      else {
+        const pruned = await pruneStalePRs(env.db, student, diff.pub);
+        if (pruned.skipped) env.log(`${student._id}: stale PRs are not removed in this run (${pruned.skipped})`);
+        else if (pruned.moved || pruned.removed) {
+          r.prsMoved = pruned.moved; r.prsRemoved = pruned.removed;
+          env.log(`${student._id}: ${pruned.moved} PRs moved to a new url, ${pruned.removed} no longer on GitHub removed`);
+        }
+      }
+    }
+
     const set = { lastSyncedAt: startedAt };
     if (full || student.backfill?.status !== 'done') set.backfill = { status: 'done', at: env.now() };
     const update = { $set: set };
@@ -254,6 +327,8 @@ async function runAll(env, tasks, summary, { concurrency }) {
       summary.studentsChecked++;
       summary.prs += r.prs; summary.prsNew += r.prsNew; summary.prsUpdated += r.prsUpdated; summary.newMerged += r.newMerged;
       summary.renamed += r.renamed;
+      if (r.prsMoved) summary.prsMoved = (summary.prsMoved || 0) + r.prsMoved;
+      if (r.prsRemoved) summary.prsRemoved = (summary.prsRemoved || 0) + r.prsRemoved;
       if (r.rateLimit && Number.isFinite(r.rateLimit.remaining)) summary.rateLimitRemaining = r.rateLimit.remaining;
       if (r.outcome === 'ok') {
         summary.ok++; consecutive = 0;

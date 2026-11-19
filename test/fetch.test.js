@@ -197,7 +197,8 @@ test('backfill + sync: unknown GitHub users are marked not_found, never crash th
   assert.equal(ghost.backfill.error, 'not_found');
   assert.equal(ghost.lastSyncedAt, null);
   assert.equal(ghost.unresolvedSince.toISOString(), NOW.toISOString());
-  assert.deepEqual(gh.rest().map((x) => x.path), ['/users/ghost'], 'existence is checked only for the empty full fetch');
+  assert.deepEqual(gh.rest().map((x) => x.path).sort(), ['/users/ghost', '/users/real'], 'students without a GitHub id are looked up once (and only once)');
+  assert.equal((await c.students.findOne({ _id: 'real' })).githubId, 5);
 
   // daily sync: the not_found student is skipped (no GitHub calls for it), the other one is incremental
   gh.calls.length = 0;
@@ -249,7 +250,7 @@ test('sync: a renamed account is followed through githubId (weekly check), keepi
   assert.deepEqual(
     { students: summary.students, ok: summary.ok, failed: summary.failed, renamed: summary.renamed, notFound: summary.notFound },
     { students: 3, ok: 3, failed: 0, renamed: 1, notFound: 0 });
-  assert.deepEqual(gh.rest().map((x) => x.path), ['/user/42'], 'only the student whose check is older than 7 days is looked up');
+  assert.deepEqual(gh.rest().map((x) => x.path).sort(), ['/user/42', '/users/peer'], 'only students whose check is older than 7 days (or who have no id yet) are looked up');
   assert.ok(gh.graphql().some((x) => x.q === 'author:NewName type:pr'), 'full fetch under the new login');
   assert.ok(!gh.graphql().some((x) => /author:OldName/.test(x.q)));
 
