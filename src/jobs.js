@@ -64,6 +64,7 @@ async function getHandler(type) {
   throw new Error(`no handler registered for job type ${type}`);
 }
 
+const STALE_CLI_MS = 6 * 60 * 60 * 1000;
 const newId = () => crypto.randomBytes(6).toString('hex');
 const stamp = () => new Date().toISOString().slice(11, 19);
 
@@ -162,8 +163,26 @@ export async function enqueue(db, type, params = {}) {
 export async function runInline(db, type, params = {}, { echo = true } = {}) {
   if (!JOB_TYPES.includes(type)) throw new Error(`unknown job type ${type}`);
   const job = newJob(type, params, 'cli', 'running');
-  await collections(db).jobs.insertOne(job);
-  return execute(db, job, { echo });
+  const { jobs } = collections(db);
+  await jobs.insertOne(job);
+  // A killed script (Ctrl-C, CronJob deadline, pod eviction) must not leave its job `running` forever.
+  let stopping = false;
+  const onSignal = (signal) => {
+    if (stopping) return;
+    stopping = true;
+    const done = () => process.exit(signal === 'SIGINT' ? 130 : 143);
+    jobs.updateOne({ _id: job._id, status: 'running' }, { $set: { status: 'error', error: `interrupted (${signal})`, finishedAt: new Date() } })
+      .then(done, done);
+    setTimeout(done, 5000).unref();
+  };
+  process.once('SIGTERM', onSignal);
+  process.once('SIGINT', onSignal);
+  try {
+    return await execute(db, job, { echo });
+  } finally {
+    process.removeListener('SIGTERM', onSignal);
+    process.removeListener('SIGINT', onSignal);
+  }
 }
 
 /** Call once on boot: marks interrupted app jobs as failed and resumes queued ones. */
@@ -171,6 +190,12 @@ export async function startRunner(db) {
   await collections(db).jobs.updateMany(
     { runner: 'app', status: 'running' },
     { $set: { status: 'error', error: 'interrupted', finishedAt: new Date() } },
+  );
+  // `cli` jobs are not managed by the app, but one that was killed hard (SIGKILL, node crash) can never finish:
+  // anything still `running` long after the CronJob deadline (3 h) is marked failed so the Jobs page stays truthful.
+  await collections(db).jobs.updateMany(
+    { runner: 'cli', status: 'running', startedAt: { $lt: new Date(Date.now() - STALE_CLI_MS) } },
+    { $set: { status: 'error', error: 'interrupted (no result after 6 hours)', finishedAt: new Date() } },
   );
   pump(db);
 }

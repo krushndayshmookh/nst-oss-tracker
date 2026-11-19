@@ -234,3 +234,24 @@ test('getUser / getUserById: user object or null on 404', async () => {
   await assert.rejects(getUser('alice', opts), /http 503/);
   await assert.rejects(getUserById(42, { ...opts, fetch: async () => { throw new Error('offline'); } }), /offline/);
 });
+
+test('GITHUB_API_URL overrides the API base for GraphQL and REST (read at call time)', async () => {
+  const seen = [];
+  const fetch = async (url) => {
+    seen.push(String(url));
+    return String(url).endsWith('/graphql')
+      ? json({ data: { s: { issueCount: 0, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] }, rateLimit: { remaining: 4000, resetAt: null } } })
+      : json({ login: 'octocat', id: 1, name: 'Octo' });
+  };
+  const before = process.env.GITHUB_API_URL;
+  try {
+    process.env.GITHUB_API_URL = 'http://127.0.0.1:9/api/v3/';
+    await fetchUserPRs('octocat', { fetch, token: 't', sleep: fakeSleep() });
+    await getUser('octocat', { fetch, token: 't', sleep: fakeSleep() });
+    delete process.env.GITHUB_API_URL;
+    await getUserById(1, { fetch, token: 't', sleep: fakeSleep() });
+  } finally {
+    if (before === undefined) delete process.env.GITHUB_API_URL; else process.env.GITHUB_API_URL = before;
+  }
+  assert.deepEqual(seen, ['http://127.0.0.1:9/api/v3/graphql', 'http://127.0.0.1:9/api/v3/users/octocat', 'https://api.github.com/user/1']);
+});

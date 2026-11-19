@@ -84,6 +84,7 @@ test('jobs: startRunner marks interrupted app jobs and resumes queued ones; cli 
     { ...base, _id: 'aaaaaaaaaaaa', type: 'reclassify', runner: 'app', status: 'running' },
     { ...base, _id: 'bbbbbbbbbbbb', type: 'sync', runner: 'cli', status: 'running' },
     { ...base, _id: 'cccccccccccc', type: 'reclassify', runner: 'app', status: 'queued', startedAt: null },
+    { ...base, _id: 'dddddddddddd', type: 'sync', runner: 'cli', status: 'running', startedAt: new Date(now.getTime() - 7 * 3600 * 1000) },
   ]);
   await startRunner(db);
   await whenIdle(db);
@@ -91,6 +92,8 @@ test('jobs: startRunner marks interrupted app jobs and resumes queued ones; cli 
   assert.deepEqual([(await get('aaaaaaaaaaaa')).status, (await get('aaaaaaaaaaaa')).error], ['error', 'interrupted']);
   assert.ok((await get('aaaaaaaaaaaa')).finishedAt instanceof Date);
   assert.equal((await get('bbbbbbbbbbbb')).status, 'running');
+  // a cli job that was killed hard hours ago can never finish: it is marked failed
+  assert.deepEqual([(await get('dddddddddddd')).status, /^interrupted/.test((await get('dddddddddddd')).error)], ['error', true]);
   const resumed = await get('cccccccccccc');
   assert.deepEqual([resumed.status, resumed.summary], ['done', { prs: 0, repos: 0, prsChanged: 0, reposChanged: 0 }]);
 });
