@@ -280,8 +280,9 @@ async function processStudent(env, student, { full }) {
       // A complete full fetch is the whole truth about this student: PRs stored under urls GitHub no longer returns
       // (repo renamed / transferred / deleted / made private, account renamed) would otherwise be counted twice or forever.
       const expected = Number(res.count);
-      const complete = !Number.isFinite(expected) || diff.pub.length >= expected - Math.max(3, Math.ceil(expected * 0.05));
-      if (!complete) env.log(`${student._id}: GitHub reported ${expected} PRs but returned ${diff.pub.length}: stale PRs are not removed in this run`);
+      const returned = new Set((res.nodes || []).map((n) => n?.url).filter(Boolean)).size; // before private repos are dropped
+      const complete = !Number.isFinite(expected) || returned >= expected - Math.max(3, Math.ceil(expected * 0.05));
+      if (!complete) env.log(`${student._id}: GitHub reported ${expected} PRs but returned ${returned}: stale PRs are not removed in this run`);
       else {
         const pruned = await pruneStalePRs(env.db, student, diff.pub);
         if (pruned.skipped) env.log(`${student._id}: stale PRs are not removed in this run (${pruned.skipped})`);

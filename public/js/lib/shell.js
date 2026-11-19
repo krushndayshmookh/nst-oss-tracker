@@ -10,7 +10,7 @@ const lastSync = document.getElementById('last-sync');
 if (lastSync) {
   api.get('/meta').then((meta) => {
     if (!meta || !meta.lastSyncAt) return;
-    lastSync.textContent = `Data updated ${fmt.rel(meta.lastSyncAt)}.`;
+    lastSync.textContent = `Data updated ${fmt.rel(meta.lastSyncAt)}.${meta.updatesPaused ? ' Updates are paused.' : ''}`;
     lastSync.title = fmt.datetime(meta.lastSyncAt);
     lastSync.hidden = false;
   }).catch(() => {});

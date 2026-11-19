@@ -5,6 +5,7 @@ import { api } from '../lib/api.js';
 import { refresh } from '../lib/router.js';
 import { h, pageHead, card, confirmDialog, toast, stateBadge, fmt } from '../lib/ui.js';
 import { act, field, getMeta, jobLink, poll, errorText, handleAuthError } from './common.js';
+import { academicYearCard } from './schedule.js';
 
 const NUMBERS = [
   { path: ['tiers', 'major'], name: 'tiers.major', label: 'Major tier, stars', hint: 'An open-source repository with at least this many stars is “Major”.' },
@@ -88,7 +89,7 @@ function listEditor(spec, draft, onChange) {
 }
 
 export default async function (el) {
-  const [{ rules: saved }, meta] = await Promise.all([api.get('/admin/rules'), getMeta()]);
+  const [{ rules: saved }, meta, ayCard] = await Promise.all([api.get('/admin/rules'), getMeta(), academicYearCard().catch(() => null)]);
   const draft = clone(strip(saved));
   const prCount = meta && meta.counts ? meta.counts.prs : null;
 
@@ -201,7 +202,8 @@ export default async function (el) {
       `These rules apply to ${prCount ? `all ${fmt.num(prCount)} stored pull requests` : 'every stored pull request'}, past and future. `,
       'Saving re-sorts all of them, which can move the public headline numbers. To change how one repository or organisation counts, make a decision in ',
       h('a', { href: '#/review' }, 'Review'), ' instead.'),
-    form);
+    form,
+    ...(ayCard ? [ayCard] : []));
 
   const warn = (e) => { if (!same(draft, saved)) { e.preventDefault(); e.returnValue = ''; } };
   window.addEventListener('beforeunload', warn);

@@ -5,6 +5,7 @@ import { api } from '../lib/api.js';
 import { setQuery, refresh } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, stateBadge, modal, confirmDialog, toast, loading, fmt } from '../lib/ui.js';
 import { act, field, poll, errorText, handleAuthError, fetchErrorText } from './common.js';
+import { scheduledFetch } from './schedule.js';
 
 const TYPE_LABELS = { sync: 'Sync', backfill: 'History fetch', reclassify: 'Reclassify', import: 'Import' };
 const TYPE_HELP = {
@@ -13,7 +14,7 @@ const TYPE_HELP = {
   reclassify: 'Sorts every stored pull request into categories again and recomputes the totals.',
   import: 'Loads the original spreadsheet data.',
 };
-const RUNNER_LABELS = { app: 'App', cli: 'Scheduled or script' };
+const RUNNER_LABELS = { app: 'App', cli: 'Script' };
 const LIVE = new Set(['queued', 'running']);
 
 function duration(job) {
@@ -38,9 +39,11 @@ function scope(job) {
 function resultText(job) {
   if (job.status === 'error') return `Failed: ${fetchErrorText(job.error)}`;
   const s = job.summary;
+  if (job.status === 'cancelled' && (!s || typeof s !== 'object')) return 'Cancelled before it started';
   if (!s || typeof s !== 'object') return job.status === 'done' ? 'Finished' : null;
   if ('ok' in s || 'failed' in s) {
     const bits = [`${fmt.num(s.ok ?? 0)} ok`, `${fmt.num(s.failed ?? 0)} failed`, `${fmt.num(s.prs ?? 0)} PRs`];
+    if (job.status === 'cancelled') bits.unshift('Cancelled, what was fetched is kept');
     if (s.renamed) bits.push(`${fmt.num(s.renamed)} renamed`);
     if (s.notFound) bits.push(`${fmt.num(s.notFound)} not found on GitHub`);
     return bits.join(', ');
@@ -169,7 +172,7 @@ function jobsTable(data, show) {
     columns: [
       { key: 'createdAt', label: 'Started', class: 'nowrap', render: (j) => h('span', { title: `Created ${fmt.datetime(j.createdAt)}` }, j.startedAt ? fmt.datetime(j.startedAt) : 'Not yet') },
       { key: 'type', label: 'Type', render: (j) => h('div', { title: TYPE_HELP[j.type] }, TYPE_LABELS[j.type] || j.type, scope(j) ? h('div', { class: 'sub cell-clip' }, scope(j)) : null) },
-      { key: 'runner', label: 'Runs on', title: 'App: started here. Scheduled: the nightly run or a script.', render: (j) => RUNNER_LABELS[j.runner] || j.runner },
+      { key: 'runner', label: 'Runs on', title: 'App: the nightly fetch or started here. Script: run from a terminal.', render: (j) => RUNNER_LABELS[j.runner] || j.runner },
       { key: 'status', label: 'Status', render: (j) => stateBadge(j.status) },
       { key: 'progress', label: 'Progress', render: progressCell },
       { key: 'summary', label: 'Result', wrap: true, render: resultText },
@@ -197,6 +200,8 @@ export default async function (el, ctx) {
     list.replaceChildren(jobsTable(d, show), pagination({ ...d, onPage: (page) => setQuery({ page: page > 1 ? page : '' }) }));
   };
   render(data);
+  const scheduled = scheduledFetch({ showLog: show, onChange: async () => render(await api.get('/admin/jobs', params)) });
+  await scheduled.load();
 
   const reclassifyBtn = h('button', { type: 'button', class: 'btn', name: 'reclassify' }, 'Reclassify');
   reclassifyBtn.addEventListener('click', () => reclassify(reclassifyBtn));
@@ -204,13 +209,14 @@ export default async function (el, ctx) {
     pageHead({
       title: 'Jobs',
       lede: 'Fetches from GitHub and recomputations, newest first. New work is fetched every night; start one here when you cannot wait.',
-      actions: [reclassifyBtn, h('button', { type: 'button', class: 'btn btn-primary', name: 'sync-now', onClick: openSync }, 'Sync now')],
+      actions: [reclassifyBtn, h('button', { type: 'button', class: 'btn', name: 'sync-now', onClick: openSync }, 'Sync selected students')],
     }),
+    scheduled.el,
     status,
     filterBar({
       fields: [
         { name: 'type', label: 'Type', type: 'select', options: Object.entries(TYPE_LABELS).map(([value, label]) => ({ value, label })) },
-        { name: 'status', label: 'Status', type: 'select', options: [['queued', 'Queued'], ['running', 'Running'], ['done', 'Done'], ['error', 'Failed']].map(([value, label]) => ({ value, label })) },
+        { name: 'status', label: 'Status', type: 'select', options: [['queued', 'Queued'], ['running', 'Running'], ['done', 'Done'], ['error', 'Failed'], ['cancelled', 'Cancelled']].map(([value, label]) => ({ value, label })) },
       ],
       values: q,
       onChange: (v) => setQuery({ ...v, page: '' }),
@@ -221,5 +227,5 @@ export default async function (el, ctx) {
 
   // Re-read the list in place every 5 s: quick while something is live, and it also picks up jobs started elsewhere
   // (the nightly run, a history fetch queued from Students).
-  return poll(async () => render(await api.get('/admin/jobs', params)), 5000);
+  return poll(async () => { render(await api.get('/admin/jobs', params)); await scheduled.load(); }, 5000);
 }

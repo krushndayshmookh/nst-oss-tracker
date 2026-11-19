@@ -78,8 +78,12 @@ function newJob(type, params, runner, status) {
   };
 }
 
+const live = new Map(); // job id -> { cancelled } for the jobs running in this process
+
 async function execute(db, job, { echo = false } = {}) {
   const { jobs } = collections(db);
+  const state = { cancelled: false, checkedAt: Date.now() };
+  live.set(job._id, state);
   let pending = [];           // log lines not yet persisted
   let progress = null;
   let lastFlush = 0;
@@ -108,6 +112,15 @@ async function execute(db, job, { echo = false } = {}) {
       progress = { done: Number(done) || 0, total: Number(total) || 0 };
       flush();
     },
+    /** Cooperative cancel: at once for a cancel requested in this process, within 2 s for one written by another process. */
+    async isCancelled() {
+      if (state.cancelled) return true;
+      if (Date.now() - state.checkedAt < 2000) return false;
+      state.checkedAt = Date.now();
+      const j = await jobs.findOne({ _id: job._id }, { projection: { cancelRequested: 1 } }).catch(() => null);
+      state.cancelled = Boolean(j?.cancelRequested);
+      return state.cancelled;
+    },
   };
   let set;
   try {
@@ -119,6 +132,7 @@ async function execute(db, job, { echo = false } = {}) {
     ctx.log(`error: ${e?.message || e}`);
     set = { status: 'error', error: String(e?.message || e) };
   }
+  live.delete(job._id);
   flush(true);
   await chain;
   set.finishedAt = new Date();
@@ -214,6 +228,7 @@ export async function cancelJob(db, id) {
     { $set: { status: 'cancelled', cancelRequested: true, finishedAt: new Date(), error: null } }, { returnDocument: 'after' });
   if (queued) return queued;
   const running = await jobs.findOneAndUpdate({ _id: id, status: 'running' }, { $set: { cancelRequested: true } }, { returnDocument: 'after' });
+  if (running && live.has(id)) live.get(id).cancelled = true;
   return running || jobs.findOne({ _id: id });
 }
 

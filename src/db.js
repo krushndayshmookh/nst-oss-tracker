@@ -32,6 +32,10 @@ export async function ensureIndexes(db) {
       { key: { category: 1, state: 1, createdAt: -1 } },
       { key: { campus: 1, batch: 1 } },
       { key: { createdAt: -1 } },
+      // ranged statistics (SPEC addendum A2)
+      { key: { mergedAt: 1, category: 1 } },
+      { key: { createdAt: 1, category: 1 } },
+      { key: { author: 1, mergedAt: 1 } },
     ]),
     c.students.createIndexes([
       { key: { campus: 1, batch: 1 } },

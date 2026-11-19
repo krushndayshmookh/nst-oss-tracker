@@ -1,4 +1,4 @@
-# NST Open Source Status: one image for the web app (API + static frontend) and the scripts (CronJob / one-off Jobs).
+# NST Open Source Status: one image for the web app (API + static frontend) and the scripts (manual runs and one-off Jobs).
 # Build for the cluster architecture:  docker build --platform linux/amd64 -t registry.nstsdc.org:5000/oss-status:<tag> .
 FROM node:22-alpine
 

@@ -148,13 +148,13 @@ function openAdd() {
 }
 
 const BULK_COLUMNS = 'github_username, name, campus, batch, email, enrolment_no, notes';
-const RESULT_BADGE = { added: ['Added', 'ok'], exists: ['Already tracked', 'neutral'], invalid: ['Not added', 'danger'] };
+const RESULT_BADGE = { added: ['Added', 'ok'], updated: ['Details updated', 'ok'], exists: ['Already tracked, no change', 'neutral'], invalid: ['Not added', 'danger'] };
 
 function openBulk() {
   const text = field({
     label: 'Students, one per line', name: 'csv', type: 'textarea', rows: 9,
     placeholder: 'campus,batch,name,github_username\nRU,2026,Asha Rao,asha-rao\nADYPU,2025,,https://github.com/octocat',
-    hint: `Paste CSV with a header row. Columns: ${BULK_COLUMNS}. Only github_username is required (a profile URL works too). A plain list of usernames, one per line, is also accepted.`,
+    hint: `Paste CSV with a header row. Columns: ${BULK_COLUMNS}. Only github_username is required (a profile URL works too). A plain list of usernames, one per line, is also accepted. Students who are already tracked are updated from the columns that have a value.`,
   });
   const file = h('input', { type: 'file', id: 'bulk-file', name: 'file', accept: '.csv,.txt,text/csv,text/plain' });
   file.addEventListener('change', async () => {
@@ -205,10 +205,10 @@ function openBulk() {
     });
     if (btn.isConnected) btn.textContent = 'Add students';
     if (!res) return;
-    if (res.added) changed = true;
+    if (res.added || res.updated) changed = true;
     out.replaceChildren(
-      h('div', { class: ['notice', res.added ? 'notice-ok' : 'notice-warn'], role: 'status' },
-        h('strong', null, `${fmt.num(res.added)} added, ${fmt.num(res.exists)} already tracked, ${fmt.num(res.invalid)} invalid.`), ' ',
+      h('div', { class: ['notice', res.added || res.updated ? 'notice-ok' : 'notice-warn'], role: 'status' },
+        h('strong', null, `${fmt.num(res.added)} added, ${fmt.num(res.updated || 0)} updated, ${fmt.num(res.exists)} unchanged, ${fmt.num(res.invalid)} invalid.`), ' ',
         res.job ? ['Their pull-request history is being fetched. ', jobLink(res.job.id, 'Follow the fetch in Jobs')] : 'Nothing new to fetch.'),
       table({
         caption: 'Result per row', compact: true, sticky: false,
@@ -472,7 +472,8 @@ export default async function (el, ctx) {
       title: 'Students',
       lede: `${fmt.num(data.total)} ${Object.keys(listParams(q)).some((k) => !['sort', 'order', 'page'].includes(k) && q[k]) ? 'match these filters' : 'tracked'}. Add students, correct their details, and control whose pull requests count.`,
       actions: [
-        h('button', { type: 'button', class: 'btn', name: 'add-many', onClick: openBulk }, 'Add many'),
+        h('a', { class: 'btn', href: api.url('/admin/export/students.csv', { ...listParams(q), sort: '', order: '', page: '' }), download: '', title: 'The students matching the filters below, with e-mail and enrolment number. Edit it and upload it again with “Add or update many”.' }, 'Download CSV'),
+        h('button', { type: 'button', class: 'btn', name: 'add-many', onClick: openBulk }, 'Add or update many'),
         h('button', { type: 'button', class: 'btn btn-primary', name: 'add-student', onClick: openAdd }, 'Add student'),
       ],
     }),

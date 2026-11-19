@@ -529,10 +529,11 @@ export function adminRouter({ db, config, auth, github = null }) {
   });
 
   r.post('/jobs/:id/cancel', async (req, res) => {
-    const job = await cancelJob(db, String(req.params.id));
-    if (!job) throw notFound('job not found');
-    if (!['cancelled', 'running'].includes(job.status)) throw new ApiError(409, 'conflict', `job already finished (${job.status})`, { jobId: job._id });
-    res.json({ job: jobOut(job) });
+    const id = String(req.params.id);
+    const before = await c.jobs.findOne({ _id: id }, { projection: { status: 1 } });
+    if (!before) throw notFound('job not found');
+    if (!['queued', 'running'].includes(before.status)) throw new ApiError(409, 'conflict', `job already finished (${before.status})`, { jobId: id });
+    res.json({ job: jobOut(await cancelJob(db, id)) });
   });
 
   // ---------- scheduled fetch (SPEC addendum C) ----------
