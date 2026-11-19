@@ -20,6 +20,7 @@ function when(iso, tz) {
 }
 
 function runResult(job) {
+  if (job.status === 'error' && /^interrupted/.test(job.error || '')) return 'Stopped because the server restarted. What was fetched is kept; the next fetch carries on';
   if (job.status === 'error') return `Failed: ${fetchErrorText(job.error)}`;
   const s = job.summary;
   if (!s) return job.status === 'cancelled' ? 'Cancelled before it started' : null;
@@ -62,6 +63,9 @@ function scopeText(params) {
   if (p.batch) bits.push(`batch ${p.batch}`);
   return bits.length ? bits.join(', ') : 'everyone';
 }
+
+/** What a fetch reads: only changes, everyone's whole history ("full refresh"), or the whole history of a few. */
+const kindText = (params) => (!(params && params.full) ? 'New and changed' : scopeText(params) === 'everyone' ? 'Full refresh' : 'Whole history');
 
 /**
  * The "Scheduled fetch" card (SPEC addendum C). scheduledFetch({ onChange, showLog }) → { el, load(), isRunning() }.
@@ -303,7 +307,7 @@ export function scheduledFetch({ onChange = () => {}, showLog = null } = {}) {
     const last = runs.find((j) => j.status !== 'queued' && j.status !== 'running');
     const lastRun = last
       ? [h('div', null, stateBadge(last.status), ' ', h('span', { title: fmt.datetime(last.finishedAt || last.createdAt) }, fmt.rel(last.finishedAt || last.createdAt))),
-        h('div', { class: 'muted' }, `${TRIGGERS[last.params && last.params.trigger] || 'Started by an admin'}${last.params && last.params.full ? ', full refresh' : ''}: ${runResult(last) || 'no summary'}.`)]
+        h('div', { class: 'muted' }, `${TRIGGERS[last.params && last.params.trigger] || 'Started by an admin'}, ${kindText(last.params).toLowerCase()}, ${scopeText(last.params)}: ${runResult(last) || 'no summary'}.`)]
       : [h('strong', null, 'None yet'), h('div', { class: 'muted' }, 'No fetch has run on this server.')];
     statusEl.replaceChildren(
       h('div', { 'data-item': 'state' }, h('dt', null, 'Status'), h('dd', null, state)),
@@ -343,7 +347,8 @@ export function scheduledFetch({ onChange = () => {}, showLog = null } = {}) {
         ...(showLog ? [h('div', { class: 'toolbar' }, btn('Open the full log', 'running-log', () => showLog(running.id), 'btn btn-sm'))] : []));
     }
     const head = liveEl.querySelector('[data-part="head"]');
-    const what = `${running.params && running.params.full ? 'Full refresh' : 'Fetch'} of ${scopeText(running.params) === 'everyone' ? 'every active student' : scopeText(running.params)}`;
+    const scoped = scopeText(running.params) !== 'everyone';
+    const what = `${running.params && running.params.full ? (scoped ? 'Whole-history fetch' : 'Full refresh') : 'Fetch'} of ${scoped ? scopeText(running.params) : 'every active student'}`;
     const text = running.status === 'queued' ? `${what} is waiting for the job in front of it.`
       : running.cancelRequested ? `Stopping: ${fmt.num(done)} of ${fmt.num(total)} students done. It ends after the students it is working on.`
         : total ? `${fmt.num(done)} of ${fmt.num(total)} students done (${Math.floor(pct)}%)${running.startedAt ? `, started ${fmt.rel(running.startedAt)}` : ''}.`
@@ -369,7 +374,7 @@ export function scheduledFetch({ onChange = () => {}, showLog = null } = {}) {
         columns: [
           { key: 'createdAt', label: `Started (${tzLabel(tz)})`, class: 'nowrap', render: (j) => (j.startedAt ? when(j.startedAt, tz) : 'Not yet') },
           { key: 'trigger', label: 'Started by', render: (j) => h('div', null, TRIGGERS[j.params && j.params.trigger] || (j.runner === 'cli' ? 'Script' : 'Started by an admin'),
-            h('div', { class: 'sub' }, `${j.params && j.params.full ? 'Full refresh' : 'New and changed'} · ${scopeText(j.params)}`)) },
+            h('div', { class: 'sub' }, `${kindText(j.params)} · ${scopeText(j.params)}`)) },
           { key: 'status', label: 'Status', render: (j) => stateBadge(j.status) },
           { key: 'summary', label: 'Result', wrap: true, render: (j) => (j.status === 'running' && j.progress && j.progress.total ? `${fmt.num(j.progress.done)} of ${fmt.num(j.progress.total)} students so far` : (j.status === 'cancelled' && j.summary ? `Stopped early; kept: ${runResult(j)}` : runResult(j))) },
           { key: 'duration', label: 'Duration', class: 'nowrap', render: runDuration },
@@ -403,36 +408,65 @@ export function scheduledFetch({ onChange = () => {}, showLog = null } = {}) {
   return { el, load, isRunning: () => Boolean(view && view.running) };
 }
 
-/** "Academic year" card of the Rules page: the default date range of every public page. */
+/**
+ * "Academic year" card of the Rules page (SPEC addendum A1): the default date range of every public page.
+ * Saving with the same label corrects the dates of the current year; a new label starts a new year and keeps the
+ * old one as an earlier range. Validation mirrors the server: label required, first day before last day, at most 400 days.
+ */
 export async function academicYearCard() {
   const { academicYear } = await api.get('/admin/academic-year');
-  const cur = academicYear.current;
+  let cur = academicYear.current;
   const label = field({ label: 'Label', name: 'ay-label', value: cur.label, required: true, placeholder: '2026-27', attrs: { maxlength: 20 } });
   const start = field({ label: 'First day', name: 'ay-start', type: 'date', value: cur.start, required: true });
   const end = field({ label: 'Last day', name: 'ay-end', type: 'date', value: cur.end, required: true });
-  const save = h('button', { type: 'submit', class: 'btn', name: 'save-academic-year' }, 'Save academic year');
+  const save = h('button', { type: 'submit', class: 'btn', name: 'save-academic-year', disabled: true }, 'Save academic year');
+  const effect = h('span', { class: 'muted', 'aria-live': 'polite' }, 'No unsaved changes.');
+  const now = h('p', null);
   const history = h('p', { class: 'muted' });
-  const drawHistory = (ay) => {
+  const days = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000) + 1;
+  const drawFacts = (ay) => {
+    now.replaceChildren('Public pages open on ', h('strong', null, `AY ${ay.current.label}`), ` (${fmt.range(ay.current.start, ay.current.end)}, ${fmt.num(days(ay.current.start, ay.current.end))} days), unless a visitor picks another range.`);
     history.textContent = ay.history.length ? `Earlier years offered as ranges: ${ay.history.map((a) => `${a.label} (${fmt.range(a.start, a.end)})`).join('; ')}.` : 'No earlier years yet.';
   };
-  drawHistory(academicYear);
+  drawFacts(academicYear);
+  const dirty = () => label.get() !== cur.label || start.get() !== cur.start || end.get() !== cur.end;
+  const onInput = () => {
+    for (const f of [label, start, end]) f.setError(null);
+    save.disabled = !dirty();
+    effect.textContent = !dirty() ? 'No unsaved changes.'
+      : label.get() && label.get() !== cur.label ? `Saving starts a new year “${label.get()}”. ${cur.label} stays available as an earlier range.`
+        : `Saving corrects the dates of ${cur.label}.`;
+  };
   const form = h('form', { class: 'stack', novalidate: true },
+    now,
     h('div', { class: 'form-grid' }, label.row, start.row, end.row),
-    h('div', { class: 'form-actions' }, save), history);
+    h('div', { class: 'form-actions' }, save, effect), history);
+  form.addEventListener('input', onInput);
+  form.addEventListener('change', onInput);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     for (const f of [label, start, end]) f.setError(null);
-    if (!label.get()) { label.setError('Enter a label, for example 2026-27.'); return; }
-    if (!start.get() || !end.get()) { (start.get() ? end : start).setError('Choose a date.'); return; }
-    if (start.get() >= end.get()) { end.setError('The last day must be after the first day.'); return; }
-    if ((new Date(end.get()) - new Date(start.get())) / 86400000 + 1 > 400) { end.setError('An academic year is at most 400 days long.'); return; }
+    const fail = (f, text) => { f.setError(text); f.input.focus(); };
+    if (!label.get()) return fail(label, 'Enter a label, for example 2026-27.');
+    if (!start.get()) return fail(start, 'Choose the first day.');
+    if (!end.get()) return fail(end, 'Choose the last day.');
+    if (start.get() >= end.get()) return fail(end, 'The last day must be after the first day.');
+    if (days(start.get(), end.get()) > 400) return fail(end, `An academic year is at most 400 days long; this one would be ${fmt.num(days(start.get(), end.get()))} days.`);
     const res = await act(() => api.put('/admin/academic-year', { label: label.get(), start: start.get(), end: end.get() }), {
       button: save,
-      onError: (err) => { if (err.status !== 400) return false; end.setError(errorText(err)); return true; },
+      onError: (err) => {
+        if (err.status !== 400) return false;
+        (/label/i.test(err.message) ? label : /start and end|dates/i.test(err.message) && !start.get() ? start : end).setError(errorText(err));
+        return true;
+      },
     });
-    if (!res) return;
-    drawHistory(res.academicYear);
-    toast(`Saved. Public pages now default to ${res.academicYear.current.label}.`);
+    if (!res) { save.disabled = !dirty(); return undefined; }
+    cur = res.academicYear.current;
+    label.input.value = cur.label; start.input.value = cur.start; end.input.value = cur.end;
+    drawFacts(res.academicYear);
+    onInput();
+    toast(`Saved. Public pages now default to AY ${cur.label} (${fmt.range(cur.start, cur.end)}).`);
+    return undefined;
   });
-  return card({ title: 'Academic year', note: 'The date range every public page shows by default. It moves on by itself each 1 July; edit it only if your year differs.' }, form);
+  return card({ title: 'Academic year', note: 'The date range every public page shows by default.' }, form);
 }

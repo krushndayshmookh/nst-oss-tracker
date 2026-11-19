@@ -29,7 +29,9 @@ function duration(job) {
 function scope(job) {
   const p = job.params || {};
   const bits = [];
+  const cohort = [p.campus, p.batch ? `batch ${p.batch}` : null].filter(Boolean).join(', ');
   if (Array.isArray(p.users) && p.users.length) bits.push(p.users.length <= 3 ? p.users.join(', ') : `${fmt.num(p.users.length)} students`);
+  else if (cohort) bits.push(`active students of ${cohort}`);
   else if (job.type === 'sync' || job.type === 'backfill') bits.push(p.pending ? 'students waiting for a fetch' : 'all active students');
   if (p.full) bits.push('full history');
   return bits.join(' · ');

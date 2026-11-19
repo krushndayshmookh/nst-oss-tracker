@@ -438,6 +438,9 @@ export function adminRouter({ db, config, auth, github = null }) {
     return v === 'any' ? { override: { $ne: null } } : v === 'none' ? { override: null } : {};
   };
 
+  // the tie-breaker must not overwrite the chosen key (sort=prs&order=asc would come back descending)
+  const reviewSort = (field, dir) => ({ [field]: dir, ...(field !== 'stats.prs' && { 'stats.prs': -1 }), _id: 1 });
+
   const REVIEW_REPO_SORT = { prs: 'stats.prs', students: 'stats.students', stars: 'stars', merged: 'stats.merged' };
 
   r.get('/review/repos', async (req, res) => {
@@ -451,7 +454,7 @@ export function adminRouter({ db, config, auth, github = null }) {
     const q = search(req.query);
     if (q) f.$or = [{ name: contains(q) }, { description: contains(q) }];
     const [rows, total] = await Promise.all([
-      c.repos.find(f).sort({ [REVIEW_REPO_SORT[sort]]: dir, 'stats.prs': -1, _id: 1 }).skip(skip).limit(limit).toArray(),
+      c.repos.find(f).sort(reviewSort(REVIEW_REPO_SORT[sort], dir)).skip(skip).limit(limit).toArray(),
       c.repos.countDocuments(f),
     ]);
     const owners = await c.owners.find({ _id: { $in: rows.map((x) => x.ownerLc) }, override: { $ne: null } }, { projection: { override: 1 } }).toArray();
@@ -468,7 +471,7 @@ export function adminRouter({ db, config, auth, github = null }) {
     const q = search(req.query);
     if (q) f.login = contains(q);
     const [rows, total] = await Promise.all([
-      c.owners.find(f).sort({ [REVIEW_OWNER_SORT[sort]]: dir, 'stats.prs': -1, _id: 1 }).skip(skip).limit(limit).toArray(),
+      c.owners.find(f).sort(reviewSort(REVIEW_OWNER_SORT[sort], dir)).skip(skip).limit(limit).toArray(),
       c.owners.countDocuments(f),
     ]);
     res.json({ items: rows.map(orgOut), total, page, limit });

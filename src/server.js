@@ -111,9 +111,14 @@ async function main() {
   await ensureRules(db);
   await ensureAcademicYear(db);
   const app = createApp({ db, config });
-  const server = app.listen(config.port, () => {
-    console.log(`oss-status listening on :${config.port} (db ${config.mongoDb}, ${config.nodeEnv})`);
+  // Listen first and only then start the job runner and the scheduler: a process that cannot bind its port (already in
+  // use) must exit instead of staying alive as a second, invisible scheduler. Express 5 passes the listen error to the
+  // callback rather than throwing it.
+  const server = await new Promise((resolve, reject) => {
+    const srv = app.listen(config.port, (err) => (err ? reject(err) : resolve(srv)));
+    srv.once('error', reject);
   });
+  console.log(`oss-status listening on :${config.port} (db ${config.mongoDb}, ${config.nodeEnv})`);
   await startRunner(db);
   let scheduler = null;
   if (config.schedulerEnabled) {

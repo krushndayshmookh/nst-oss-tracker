@@ -148,7 +148,7 @@ function openAdd() {
 }
 
 const BULK_COLUMNS = 'github_username, name, campus, batch, email, enrolment_no, notes';
-const RESULT_BADGE = { added: ['Added', 'ok'], updated: ['Details updated', 'ok'], exists: ['Already tracked, no change', 'neutral'], invalid: ['Not added', 'danger'] };
+const RESULT_BADGE = { added: ['Added', 'ok'], updated: ['Details updated', 'ok'], exists: ['Already tracked, no change', 'neutral'], invalid: ['Skipped, see problem', 'danger'] };
 
 function openBulk() {
   const text = field({
