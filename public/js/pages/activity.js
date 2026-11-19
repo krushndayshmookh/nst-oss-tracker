@@ -1,12 +1,89 @@
 // Activity: when students contribute. GET /activity (SPEC addendum A3).
+// The page answers, in this order: how much, what stands out, the trend (month, week), the calendar (day),
+// the weekly rhythm (weekday), the daily rhythm (hour, weekday × hour) and how the campuses compare.
 
 import { api, ApiError } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
-import { h, pageHead, filterBar, statCard, card, calendarHeatmap, heatGrid, fmt } from '../lib/ui.js';
+import { h, pageHead, filterBar, statCard, card, table, calendarHeatmap, heatGrid, fmt } from '../lib/ui.js';
 import { lineChart, barChart } from '../lib/charts.js';
-import { getMeta, hasRanges, rangeParams, rangeControl, rangeSentence, link, categoryOptions, opts, clean, WEEKDAYS, put } from './common.js';
+import {
+  getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeIsOpen, link, categoryOptions, opts, clean, WEEKDAYS, put,
+} from './common.js';
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const PARTS = [
+  { label: 'Night', hours: '00:00 to 05:59', from: 0, to: 6 },
+  { label: 'Morning', hours: '06:00 to 11:59', from: 6, to: 12 },
+  { label: 'Afternoon', hours: '12:00 to 17:59', from: 12, to: 18 },
+  { label: 'Evening', hours: '18:00 to 23:59', from: 18, to: 24 },
+];
+const hh = (n) => `${String(((n % 24) + 24) % 24).padStart(2, '0')}:00`;
+const day = (iso) => fmt.range(iso, iso).split(' – ')[0];
+const dayName = (iso) => DAY_NAMES[(new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7];
+const sum = (list) => list.reduce((a, b) => a + b, 0);
+
+/** Plain-language findings from the response; each is a list of nodes. Nothing is said about too few pull requests. */
+function findings({ total, dowVals, hourVals, byMonth, byWeek, totals, metric, word, open }) {
+  const out = [];
+  if (total < 20) return out;
+
+  // weekly rhythm
+  const top = dowVals.indexOf(Math.max(...dowVals));
+  const low = dowVals.indexOf(Math.min(...dowVals));
+  const weekend = dowVals[5] + dowVals[6];
+  const weekdayAvg = sum(dowVals.slice(0, 5)) / 5;
+  const weekendAvg = weekend / 2;
+  const ratio = weekdayAvg ? weekendAvg / weekdayAvg : 0;
+  const weekendText = ratio >= 0.9 && ratio <= 1.1 ? 'about as busy as a weekday'
+    : ratio > 1.1 ? `${Math.round((ratio - 1) * 100)}% busier than a weekday`
+      : `${Math.round((1 - ratio) * 100)}% quieter than a weekday`;
+  out.push([h('b', null, `${DAY_NAMES[top]} is the busiest day`), ` (${fmt.pct(dowVals[top], total)} of pull requests ${word}), ${DAY_NAMES[low]} the quietest (${fmt.pct(dowVals[low], total)}). `,
+    `A weekend day is ${weekendText}; ${fmt.pct(weekend, total)} of the work lands on Saturday or Sunday.`]);
+
+  // daily rhythm: best 3-hour window (wrapping midnight) + the late-night share
+  let best = 0;
+  let bestSum = -1;
+  for (let i = 0; i < 24; i++) {
+    const s3 = hourVals[i] + hourVals[(i + 1) % 24] + hourVals[(i + 2) % 24];
+    if (s3 > bestSum) { bestSum = s3; best = i; }
+  }
+  const late = hourVals[22] + hourVals[23] + hourVals[0] + hourVals[1] + hourVals[2];
+  const quietStart = [...Array(24).keys()].reduce((q, i) => {
+    const s4 = hourVals[i] + hourVals[(i + 1) % 24] + hourVals[(i + 2) % 24] + hourVals[(i + 3) % 24];
+    return s4 < q.s ? { s: s4, i } : q;
+  }, { s: Infinity, i: 0 });
+  out.push([h('b', null, `The busiest three hours are ${hh(best)} to ${hh(best + 3)}`), ` (${fmt.pct(bestSum, total)}). `,
+    `${fmt.pct(late, total)} of pull requests are ${word} late at night, between 22:00 and 03:00; `,
+    `the quietest stretch is ${hh(quietStart.i)} to ${hh(quietStart.i + 4)}.`]);
+
+  // trend: compare the last two complete months
+  const complete = open ? byMonth.slice(0, -1) : byMonth;
+  if (complete.length >= 2) {
+    const a = complete[complete.length - 1];
+    const b = complete[complete.length - 2];
+    const va = a[metric] || 0;
+    const vb = b[metric] || 0;
+    if (vb > 0) {
+      const change = Math.round(((va - vb) / vb) * 100);
+      out.push([h('b', null, `${fmt.month(a.month)}: ${fmt.num(va)} ${word}`),
+        change === 0 ? `, the same as ${fmt.month(b.month)}. ` : `, ${change > 0 ? 'up' : 'down'} ${Math.abs(change)}% on ${fmt.month(b.month)} (${fmt.num(vb)}). `,
+        a.activeStudents !== undefined ? `${fmt.num(a.activeStudents)} students were active that month${b.activeStudents !== undefined ? `, against ${fmt.num(b.activeStudents)} the month before` : ''}.` : null]);
+    }
+  }
+
+  // steadiness: how many weeks carry the work, and how concentrated it is among students
+  const allWeeks = byWeek.map((w) => w[metric] || 0);
+  const weeks = allWeeks.slice(Math.max(0, allWeeks.findIndex((v) => v > 0))); // from the first week with any work
+  if (weeks.length >= 4 && totals.activeStudents) {
+    const mid = (list) => [...list].sort((x, y) => x - y)[Math.floor(list.length / 2)];
+    const quiet = mid(weeks) === 0; // long, sparse ranges: describe the weeks that had any work
+    const median = quiet ? mid(weeks.filter((v) => v > 0)) : mid(weeks);
+    out.push([h('b', null, `A typical ${quiet ? 'active ' : ''}week sees ${fmt.num(median)} pull requests ${word}`),
+      `; the busiest saw ${fmt.num(Math.max(...weeks))}. `,
+      `${fmt.num(totals.activeStudents)} students were active in the period, ${(total / totals.activeStudents).toFixed(1)} pull requests ${word} each on average.`]);
+  }
+  return out;
+}
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -20,7 +97,7 @@ export default async function (el, ctx) {
     a = await api.get('/activity', { ...filters, metric });
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 404) throw err;
-    put(el, 
+    put(el,
       pageHead({ title: 'When students contribute' }),
       h('div', { class: 'notice notice-warn' }, 'Activity analytics are not available on this server yet. ',
         h('a', { href: link('/', {}, ctx) }, 'Back to the overview')));
@@ -28,71 +105,140 @@ export default async function (el, ctx) {
   }
   const charts = [];
   const word = metric === 'merged' ? 'merged' : 'opened';
+  const Word = metric === 'merged' ? 'Merged' : 'Opened';
   const val = (row) => (row ? row[metric] || 0 : 0);
   const scope = [q.author && `by ${q.author}`, q.repo && `to ${q.repo}`, q.owner && `to projects of ${q.owner}`].filter(Boolean).join(', ');
+  const what = q.category === 'all' ? 'pull requests of every category'
+    : q.category ? `pull requests in the category “${(categoryOptions().find((o) => o.value === q.category) || {}).label || q.category}”`
+      : 'open-source pull requests';
+  const tzNote = a.tz === 'Asia/Kolkata' || !a.tz ? 'India Standard Time' : a.tz;
+  const open = rangeIsOpen(a.range);
 
-  put(el, 
+  put(el,
     pageHead({
       title: 'When students contribute',
-      lede: [rangeSentence(a.range), ' ', a.tz === 'Asia/Kolkata' || !a.tz ? 'Times are India Standard Time.' : `Times are in ${a.tz}.`],
+      range: rangeLine(a.range),
+      lede: [`When ${what} by tracked students are opened and merged: by month, week, day, day of the week and hour. `,
+        `All dates and hours are in ${tzNote}.`],
     }),
     rangeControl(meta, ctx),
     filterBar({
       fields: [
-        { name: 'campus', label: 'Campus', type: 'select', options: opts(meta.campuses) },
-        { name: 'year', label: 'Year', type: 'select', options: opts(meta.years) },
+        { name: 'campus', label: 'Campus', type: 'select', options: opts(meta.campuses), allLabel: 'All campuses' },
+        { name: 'year', label: 'Year', type: 'select', options: opts(meta.years), allLabel: 'All years' },
         { name: 'category', label: 'Category', type: 'select', options: categoryOptions() },
-        { name: 'metric', label: 'Count', type: 'select', options: [{ value: '', label: 'Opened' }, { value: 'merged', label: 'Merged' }] },
+        { name: 'metric', label: 'Count pull requests', type: 'select', options: [{ value: '', label: 'When opened' }, { value: 'merged', label: 'When merged' }] },
       ],
       values: q,
       onChange: (v) => setQuery(v),
     }),
     scope ? h('div', { class: 'notice' }, `Showing pull requests ${scope}. `,
-      h('button', { type: 'button', class: 'btn btn-link', onClick: () => setQuery({ author: '', repo: '', owner: '' }) }, 'Show everyone')) : null,
+      h('button', { type: 'button', class: 'btn btn-link', name: 'scope-clear', onClick: () => setQuery({ author: '', repo: '', owner: '' }) }, 'Show everyone')) : null,
+    metric === 'merged' ? h('div', { class: 'notice' },
+      'Merge times show when maintainers accepted the work, not when students did it. Choose “When opened” to see when students work.') : null,
   );
 
   const busy = a.busiest || {};
   const totals = a.totals || {};
-  put(el, h('div', { class: 'cards' },
-    statCard({ key: true, label: `Pull requests ${word}`, value: totals[metric], sub: metric === 'opened' ? `${fmt.num(totals.merged)} merged` : `${fmt.num(totals.opened)} opened` }),
-    statCard({ label: 'Active students', value: totals.activeStudents }),
-    statCard({ label: 'Busiest day', value: busy.day ? busy.day.count : null, sub: busy.day ? fmt.range(busy.day.date, busy.day.date).split(' – ')[0] : null }),
-    statCard({ label: 'Busiest week', value: busy.week ? busy.week.count : null, sub: busy.week ? `week of ${fmt.range(busy.week.weekStart, busy.week.weekStart).split(' – ')[0]}` : null }),
-    statCard({ label: 'Busiest month', value: busy.month ? busy.month.count : null, sub: busy.month ? fmt.month(busy.month.month) : null })));
-
+  const total = totals[metric] || 0;
   const byMonth = a.byMonth || [];
-  const monthCanvas = h('canvas');
-  put(el, card({ title: 'Pull requests by month' }, h('div', { class: 'chart-box' }, monthCanvas)));
-
-  put(el, card({ title: 'Day by day', note: `Pull requests ${word}` },
-    Array.isArray(a.byDate) && a.byDate.length
-      ? calendarHeatmap(a.byDate.map((d) => ({ date: d.date, value: val(d) })), { unit: `pull requests ${word}` })
-      : h('p', { class: 'muted' }, a.truncated ? 'The range is too long for a day-by-day view. Choose a shorter range.' : 'No days in this range.')));
-
+  const byWeek = a.byWeek || [];
+  const byDate = Array.isArray(a.byDate) ? a.byDate : [];
   const dow = new Map((a.byWeekday || []).map((d) => [d.dow, d]));
   const hours = new Map((a.byHour || []).map((d) => [d.hour, d]));
+  const dowVals = WEEKDAYS.map((_, i) => val(dow.get(i + 1)));
+  const hourVals = Array.from({ length: 24 }, (_, i) => val(hours.get(i)));
+
+  put(el, h('div', { class: 'cards' },
+    statCard({ key: true, label: `Pull requests ${word}`, value: total, sub: metric === 'opened' ? `${fmt.num(totals.merged)} merged in the period` : `${fmt.num(totals.opened)} opened in the period` }),
+    statCard({ label: 'Active students', value: totals.activeStudents, sub: 'opened or merged at least one' }),
+    statCard({ label: 'Busiest day', value: busy.day && busy.day.count ? busy.day.count : null, sub: busy.day && busy.day.count ? `${dayName(busy.day.date)} ${day(busy.day.date)}` : null }),
+    statCard({ label: 'Busiest week', value: busy.week && busy.week.count ? busy.week.count : null, sub: busy.week && busy.week.count ? `week of Monday ${day(busy.week.weekStart)}` : null }),
+    statCard({ label: 'Busiest month', value: busy.month && busy.month.count ? busy.month.count : null, sub: busy.month && busy.month.count ? fmt.month(busy.month.month) : null })));
+
+  if (!total) {
+    put(el, card({}, h('p', { class: 'muted' }, `No ${what} were ${word} in this period with these filters. Try a longer range or another category.`)));
+    return undefined;
+  }
+
+  // ── what stands out + parts of the day ──
+  const found = findings({ total, dowVals, hourVals, byMonth, byWeek, totals, metric, word, open });
+  const partRows = PARTS.map((p) => ({ ...p, value: sum(hourVals.slice(p.from, p.to)) }));
+  const partMax = Math.max(...partRows.map((p) => p.value), 1);
+  const partsOfDay = h('div', null,
+    h('h3', { class: 'mini-title' }, `Share ${word} by part of the day`),
+    h('dl', { class: 'sharebars' }, partRows.map((p) => [
+      h('dt', null, p.label, h('small', null, p.hours)),
+      h('dd', { class: 'track', 'aria-hidden': 'true' }, h('span', { style: { width: `${(p.value / partMax) * 100}%` } })),
+      h('dd', { class: 'val' }, fmt.pct(p.value, total), h('small', null, fmt.num(p.value))),
+    ])));
+  put(el, card({ title: 'What stands out' },
+    h('div', { class: 'split' },
+      found.length ? h('ul', { class: 'findings' }, found.map((f) => h('li', null, f)))
+        : h('p', { class: 'muted' }, 'Too few pull requests in this period to describe a pattern.'),
+      partsOfDay)));
+
+  // ── month and week ──
+  const monthCanvas = h('canvas');
+  const weekCanvas = h('canvas');
+  const incomplete = open ? 'The latest bar is still filling up.' : null;
+  put(el, h('div', { class: 'grid grid-2' },
+    card({ title: 'By month', note: 'Opened and merged' }, h('div', { class: 'chart-box' }, monthCanvas),
+      incomplete ? h('p', { class: 'card-note' }, incomplete) : null),
+    card({ title: 'By week', note: `${Word}, weeks start on Monday` }, h('div', { class: 'chart-box' }, weekCanvas),
+      incomplete ? h('p', { class: 'card-note' }, incomplete) : null)));
+
+  // ── day by day ──
+  const topDays = [...byDate].sort((x, y) => val(y) - val(x)).slice(0, 5).filter((d) => val(d) > 0);
+  const activeDays = byDate.filter((d) => val(d) > 0).length;
+  put(el, card({ title: 'Day by day', note: byDate.length ? `Pull requests ${word} on ${fmt.num(activeDays)} of ${fmt.num(byDate.length)} days` : null },
+    byDate.length
+      ? h('div', { class: 'split' },
+        calendarHeatmap(byDate.map((d) => ({ date: d.date, value: val(d) })), { unit: `pull requests ${word}` }),
+        h('div', null,
+          h('h3', { class: 'mini-title' }, 'Busiest days'),
+          table({
+            compact: true, sticky: false, caption: 'Busiest days', rows: topDays,
+            columns: [
+              { key: 'date', label: 'Day', render: (d) => `${dayName(d.date).slice(0, 3)} ${day(d.date)}` },
+              { key: metric, label: Word, num: true, render: (d) => fmt.num(val(d)) },
+            ],
+          })))
+      : h('p', { class: 'muted' }, 'This range is too long for a day-by-day calendar. ',
+        h('button', { type: 'button', class: 'btn btn-link', name: 'calendar-12m', onClick: () => setQuery({ from: '', to: '', range: '12m' }) }, 'Show the last 12 months'))));
+
+  // ── weekday and hour ──
   const dowCanvas = h('canvas');
   const hourCanvas = h('canvas');
   put(el, h('div', { class: 'grid grid-2' },
-    card({ title: 'By day of week' }, h('div', { class: 'chart-box chart-box-sm' }, dowCanvas)),
-    card({ title: 'By hour of day' }, h('div', { class: 'chart-box chart-box-sm' }, hourCanvas))));
+    card({ title: 'By day of the week', note: Word }, h('div', { class: 'chart-box chart-box-sm' }, dowCanvas)),
+    card({ title: 'By hour of the day', note: `${Word}, hour starting` }, h('div', { class: 'chart-box chart-box-sm' }, hourCanvas))));
 
   const cells = new Map((a.heatmap || []).map((c) => [`${c.dow}-${c.hour}`, c]));
-  put(el, card({ title: 'Day of week by hour', note: `Pull requests ${word}` },
+  put(el, card({ title: 'Day of the week by hour', note: `Pull requests ${word}; each square is one hour of one weekday` },
     heatGrid({
       rows: WEEKDAYS,
       cols: Array.from({ length: 24 }, (_, i) => (i % 3 === 0 ? String(i).padStart(2, '0') : '')),
       value: (r, c) => val(cells.get(`${r + 1}-${c}`)),
       unit: `pull requests ${word}`,
-      cellTitle: (r, c, v) => `${fmt.num(v)} ${word}, ${DAY_NAMES[r]} ${String(c).padStart(2, '0')}:00 to ${String(c).padStart(2, '0')}:59`,
+      cellTitle: (r, c, v) => `${fmt.num(v)} ${word} on ${DAY_NAMES[r]}s between ${hh(c)} and ${hh(c + 1)}`,
     })));
 
+  // ── campuses ──
   const campusRows = a.byCampusMonth || [];
-  const campusNames = [...new Set(campusRows.map((r) => r.campus))].filter((c) => c !== 'Unknown').sort().slice(0, 5);
+  const campusTotals = new Map();
+  for (const r of campusRows) campusTotals.set(r.campus, (campusTotals.get(r.campus) || 0) + val(r));
+  const campusNames = [...campusTotals.keys()].filter((c) => c !== 'Unknown').sort().slice(0, 5);
   const months = byMonth.map((m) => m.month);
   const campusCanvas = h('canvas');
-  if (campusNames.length > 1 && months.length) {
-    put(el, card({ title: 'Campuses by month', note: `Pull requests ${word}` }, h('div', { class: 'chart-box' }, campusCanvas)));
+  const showCampuses = campusNames.length > 1 && months.length > 0 && !q.campus;
+  if (showCampuses) {
+    put(el, card({ title: 'Campuses by month', note: `Pull requests ${word}` },
+      h('div', { class: 'chart-box' }, campusCanvas),
+      h('p', { class: 'card-note' },
+        campusNames.map((c) => `${c} ${fmt.num(campusTotals.get(c))}`).join(' · '),
+        '. Counts are not adjusted for the size of a campus; the ',
+        h('a', { href: link('/', {}, ctx) }, 'overview'), ' compares campuses by share of students.')));
   }
 
   charts.push(barChart(monthCanvas, {
@@ -103,22 +249,25 @@ export default async function (el, ctx) {
     ],
     label: 'Pull requests opened and merged per month',
   }));
+  charts.push(barChart(weekCanvas, {
+    labels: byWeek.map((w) => (byWeek.length > 60 ? day(w.weekStart).replace(/^\d+ /, '') : day(w.weekStart).replace(/ \d{4}$/, ''))),
+    series: [{ label: Word, data: byWeek.map(val), color: metric === 'merged' ? 'merged' : 1 }],
+    label: `Pull requests ${word} per week`,
+  }));
   charts.push(barChart(dowCanvas, {
-    labels: WEEKDAYS, series: [{ label: metric === 'merged' ? 'Merged' : 'Opened', data: WEEKDAYS.map((_, i) => val(dow.get(i + 1))), color: 1 }],
+    labels: WEEKDAYS, series: [{ label: Word, data: dowVals, color: metric === 'merged' ? 'merged' : 1 }],
     label: `Pull requests ${word} by day of the week`,
   }));
   charts.push(barChart(hourCanvas, {
     labels: Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0')),
-    series: [{ label: metric === 'merged' ? 'Merged' : 'Opened', data: Array.from({ length: 24 }, (_, i) => val(hours.get(i))), color: 1 }],
+    series: [{ label: Word, data: hourVals, color: metric === 'merged' ? 'merged' : 1 }],
     label: `Pull requests ${word} by hour of the day`,
   }));
-  if (campusNames.length > 1 && months.length) {
+  if (showCampuses) {
     const at = new Map(campusRows.map((r) => [`${r.campus}|${r.month}`, r]));
-    charts.push(lineChart(campusCanvas, {
-      labels: months,
-      series: campusNames.map((c, i) => ({ label: c, color: i + 1, data: months.map((m) => val(at.get(`${c}|${m}`))) })),
-      label: `Pull requests ${word} per month by campus`,
-    }));
+    const series = campusNames.map((c, i) => ({ label: c, color: i + 1, data: months.map((m) => val(at.get(`${c}|${m}`))) }));
+    const input = { labels: months, series, label: `Pull requests ${word} per month by campus` };
+    charts.push(months.length <= 6 ? barChart(campusCanvas, input) : lineChart(campusCanvas, input));
   }
   return () => charts.forEach((c) => c.destroy());
 }

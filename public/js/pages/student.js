@@ -7,7 +7,7 @@ import {
 } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
 import {
-  getMeta, rangeParams, rangeControl, rangeSentence, link, repoHref, studentName, prTable, fetchActivity, activityCard, put
+  getMeta, rangeParams, rangeControl, rangeLine, link, repoHref, studentName, prTable, fetchActivity, activityCard, put
 } from './common.js';
 
 export default async function (el, ctx) {
@@ -27,12 +27,13 @@ export default async function (el, ctx) {
   const prs = prPage || data.prs;
   const charts = [];
 
-  const where = [s.campus !== 'Unknown' ? s.campus : null, s.year !== 'Unknown' ? s.year : null, s.batch ? `batch ${s.batch}` : null].filter(Boolean).join(', ');
+  const where = [s.campus !== 'Unknown' ? s.campus : null, s.year !== 'Unknown' ? s.year : null, s.batch ? `Batch ${s.batch}` : null].filter(Boolean).join(' · ');
   put(el, 
     pageHead({
       crumbs: [{ label: 'Students', href: link('/students', {}, ctx) }],
       title: studentName(s),
-      lede: [where ? `${where}. ` : null, rangeSentence(data.range)],
+      range: rangeLine(data.range),
+      lede: where || null,
       actions: [h('a', { class: 'btn ext', href: `https://github.com/${encodeURIComponent(s.username)}`, target: '_blank', rel: 'noopener noreferrer' }, `${s.username} on GitHub`)],
     }),
     rangeControl(meta, ctx),
@@ -52,7 +53,7 @@ export default async function (el, ctx) {
       anyOs ? h('div', { class: 'chart-box' }, monthCanvas) : h('p', { class: 'muted' }, 'No open-source pull requests in these months.')),
     card({ title: 'What the pull requests are' },
       h('div', { class: 'stack' },
-        st.totalPrs ? categoryBar(st.byCategory, { legend: true, large: true }) : h('p', { class: 'muted' }, 'No public pull requests yet.'),
+        st.totalPrs ? categoryBar(st.byCategory, { legend: true, large: true }) : h('p', { class: 'muted' }, 'No public pull requests in this period.'),
         h('dl', { class: 'facts' },
           h('dt', null, 'First PR'), h('dd', null, fmt.date(st.firstPrAt)),
           h('dt', null, 'Latest PR'), h('dd', null, fmt.date(st.lastPrAt)),
@@ -64,7 +65,7 @@ export default async function (el, ctx) {
 
   put(el, card({ title: 'Projects contributed to', note: `${fmt.num(data.repos.length)}${data.repos.length === 100 ? '+' : ''}`, flush: true },
     table({
-      caption: 'Projects contributed to', compact: true, rows: data.repos, empty: 'No pull requests yet.',
+      caption: 'Projects contributed to', compact: true, rows: data.repos, empty: 'No pull requests in this period.',
       columns: [
         { key: 'name', label: 'Project', render: (r) => h('span', null, h('a', { href: repoHref(r.name, ctx) }, r.name), ' ', ghLink(r.name, 'GitHub')) },
         { key: 'category', label: 'Category', render: (r) => categoryBadge(r.category, r.tier) },
@@ -77,10 +78,10 @@ export default async function (el, ctx) {
 
   put(el, card({ title: 'Pull requests', flush: true },
     tabs([
-      { label: 'Open source', value: '', count: st.osPrs, active: !all },
-      { label: 'All', value: 'all', count: st.totalPrs, active: all },
+      { label: 'Open source', value: '', count: all ? st.osPrs : prs.total, active: !all },
+      { label: 'All', value: 'all', count: all ? prs.total : st.totalPrs, active: all },
     ], { onSelect: (v) => setQuery({ cat: v, page: '' }), label: 'Pull request category' }),
-    prTable(prs.items, ctx, { student: false, empty: all ? 'No public pull requests yet.' : 'No open-source pull requests yet. The All tab shows every pull request.' }),
+    prTable(prs.items, ctx, { student: false, empty: all ? 'No public pull requests in this period.' : 'No open-source pull requests in this period. The All tab shows every pull request.' }),
     pagination({ ...prs, onPage: (p) => setQuery({ page: p > 1 ? p : '' }) })));
 
   if (anyOs) {

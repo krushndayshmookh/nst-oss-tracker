@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { h, pageHead, statCard, card, table, barCell, badge, categoryBadge, categoryBar, overrideBadge, calendarHeatmap, fmt, CATEGORIES } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, link, repoHref, contributorsTable, fetchActivity, activityCard, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, link, repoHref, contributorsTable, fetchActivity, activityCard, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -22,7 +22,8 @@ export default async function (el, ctx) {
     pageHead({
       crumbs: [{ label: 'Organisations', href: link('/orgs', {}, ctx) }],
       title: org.login,
-      lede: [org.type === 'User' ? 'Personal account. ' : null, rangeSentence(data.range)],
+      range: rangeLine(data.range),
+      lede: org.type === 'User' ? 'Personal account.' : null,
       actions: [h('a', { class: 'btn ext', href: `https://github.com/${encodeURIComponent(org.login)}`, target: '_blank', rel: 'noopener noreferrer' }, 'View on GitHub')],
     }),
     rangeControl(meta, ctx),
@@ -59,7 +60,7 @@ export default async function (el, ctx) {
           { key: 'lastPrAt', label: 'Last PR', num: true, render: (r) => fmt.date(r.stats.lastPrAt) },
         ],
       })),
-    card({ title: 'Students', note: `${fmt.num(data.students.length)}${data.students.length === 100 ? '+' : ''}`, flush: true }, contributorsTable(data.students, ctx)),
+    card({ title: 'Students', note: `${fmt.num(data.students.length)}${data.students.length === 100 ? '+' : ''}`, flush: true }, contributorsTable(data.students, ctx, { past: isPastRange(data.range, meta) })),
   );
   if (strip) charts.push(strip.draw(barChart));
   return () => charts.forEach((c) => c.destroy());

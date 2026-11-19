@@ -205,6 +205,7 @@ export function lineChart(canvas, { labels, series, label } = {}) {
     backgroundColor: color,
     borderWidth: 2,
     tension: 0.25,
+    cubicInterpolationMode: 'monotone', // no overshoot: a smoothed line must not dip below zero or invent a peak
     pointRadius: 0,
     pointHoverRadius: 4,
     pointHitRadius: 12,

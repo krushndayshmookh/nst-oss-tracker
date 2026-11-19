@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, barCell, tierBadge, categoryBadge, ghLink, fmt, TIERS, TIER_LABELS } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, repoHref, orgHref, categoryOptions, clean, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, repoHref, orgHref, categoryOptions, clean, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -20,7 +20,9 @@ export default async function (el, ctx) {
       title: 'Projects',
       lede: [openSource
         ? 'Public projects that count as open source here and have received pull requests from NST students. '
-        : 'Repositories that have received pull requests from NST students. ', rangeSentence(data.range)],
+        : 'Repositories that have received pull requests from NST students. ',
+      data.range && (data.range.from || data.range.to) ? 'Only projects with a pull request opened or merged in the period are listed.' : null],
+      range: rangeLine(data.range),
     }),
     rangeControl(meta, ctx),
     filterBar({

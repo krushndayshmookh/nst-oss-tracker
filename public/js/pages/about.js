@@ -2,7 +2,7 @@
 
 import { api } from '../lib/api.js';
 import { h, pageHead, table, categoryBadge, tierBadge, fmt, CATEGORIES, CATEGORY_HELP } from '../lib/ui.js';
-import { getMeta, link, put } from './common.js';
+import { getMeta, hasRanges, link, put, rangeParams, rangeControl, rangeLine, rangeSentence } from './common.js';
 
 function chips(list, emptyText) {
   if (!list || !list.length) return h('p', { class: 'muted' }, emptyText);
@@ -10,7 +10,11 @@ function chips(list, emptyText) {
 }
 
 export default async function (el, ctx) {
-  const [meta, overview] = await Promise.all([getMeta(), api.get('/overview', { range: ctx.query.range === 'all' ? 'all' : '' }).catch(() => null)]);
+  const meta = await getMeta();
+  const range = rangeParams(ctx.query, meta);
+  const overview = await api.get('/overview', range).catch(() => null);
+  const ay = meta.academicYear && meta.academicYear.current;
+  const tzNote = !meta.tz || meta.tz === 'Asia/Kolkata' ? 'India Standard Time' : meta.tz;
   const r = meta.rulesSummary || {};
   const tiers = r.tiers || {};
   const n = (v) => fmt.num(v);
@@ -21,8 +25,10 @@ export default async function (el, ctx) {
   put(el, 
     pageHead({
       title: 'How contributions are counted',
-      lede: 'What this site counts, how each pull request is put into a category, and where the data comes from.',
+      range: overview ? rangeLine(overview.range) : null,
+      lede: 'What this site counts, how each pull request is put into a category, how date ranges work, and where the data comes from.',
     }),
+    rangeControl(meta, ctx),
     h('div', { class: 'prose' },
       h('h2', null, 'What this site counts'),
       h('p', null,
@@ -34,6 +40,7 @@ export default async function (el, ctx) {
         'but it is not part of the headline. That work is worth doing; it is simply a different thing from getting a change accepted by an outside project.'),
 
       h('h2', null, 'The six categories'),
+      overview && overview.range ? h('p', { class: 'muted' }, `Pull requests opened in the selected period (${rangeSentence(overview.range)}).`) : null,
     ),
     table({
       caption: 'Categories', sticky: false,
@@ -71,6 +78,21 @@ export default async function (el, ctx) {
         h('li', null, tierBadge('emerging'), ` fewer than ${n(tiers.established)} stars`)),
       h('p', null, 'Stars are a rough proxy for how established a project is, not a measure of the quality of a contribution. Admins correct the cases where the proxy is wrong.'),
 
+      hasRanges(meta) ? [
+        h('h2', null, 'Date ranges'),
+        h('p', null,
+          'Every page shows its figures for one period, chosen with the buttons under the page title. ',
+          ay ? ['Unless you choose otherwise that is the current academic year, ', h('strong', null, `AY ${ay.label}`), ` (${fmt.range(ay.start, ay.end)}). `] : null,
+          'The period is part of the page address, so a link you share opens on the same dates.'),
+        h('ul', null,
+          h('li', null, 'A pull request counts as ', h('strong', null, 'opened'), ' in a period when it was created in it, and as ', h('strong', null, 'merged'),
+            ' when it was merged in it, whenever it was opened. A pull request opened in June and merged in July is opened in one academic year and merged in the next.'),
+          h('li', null, '“Students with a merged open-source pull request” means at least one merged in the period.'),
+          h('li', null, `Days, weeks (Monday to Sunday), months and hours are in ${tzNote}. A period includes both its first and its last day.`),
+          h('li', null, 'Year of study is always as of today. For a past academic year the batch is shown beside it, because a student now in 3rd year was in 2nd year then.')),
+        h('p', null, h('a', { href: link('/activity', {}, ctx) }, 'When students contribute'), ' breaks the period down by month, week, day, day of the week and hour.'),
+      ] : null,
+
       h('h2', null, 'Current lists'),
       h('h3', null, 'NST organisations'),
       chips(r.nstOrgs, 'None listed.'),
@@ -99,7 +121,7 @@ export default async function (el, ctx) {
         'If a project is in the wrong category, a pull request is missing, or your account is not tracked, tell your campus open-source coordinator or a site admin. ',
         'Admins can add students and override the category of a pull request, a project or an organisation; overridden items are marked.'),
       h('p', null, h('a', { href: link('/prs', { category: 'all' }, ctx) }, 'Browse every pull request'), ' · ',
-        h('a', { href: '/api/export/students.csv' }, 'Download the student table as CSV')),
+        h('a', { href: api.url('/export/students.csv', range), download: '' }, 'Download the student table as CSV')),
     ),
   );
 }

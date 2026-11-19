@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, barCell, ghLink, fmt } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, orgHref, clean, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, orgHref, clean, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -19,7 +19,9 @@ export default async function (el, ctx) {
       title: 'Organisations',
       lede: [q.category === 'all'
         ? 'Every account that owns a repository students have sent pull requests to, including their own. '
-        : 'Organisations and maintainers whose open-source projects have received pull requests from NST students. ', rangeSentence(data.range)],
+        : 'Organisations and maintainers whose open-source projects have received pull requests from NST students. ',
+      data.range && (data.range.from || data.range.to) ? 'Only those with a pull request opened or merged in the period are listed.' : null],
+      range: rangeLine(data.range),
     }),
     rangeControl(meta, ctx),
     filterBar({

@@ -1,10 +1,10 @@
-// Admin → Jobs. GET /admin/jobs, GET /admin/jobs/:id; start a sync or a reclassify; follow progress and the log.
-// The list re-reads itself every 5 s while anything is queued or running; an open log every 2 s.
+// Admin → Jobs. GET /admin/jobs, GET /admin/jobs/:id; the scheduled-fetch panel (./schedule.js) starts, pauses and
+// cancels fetches; reclassify; follow progress and the log. The list re-reads itself; an open log every 2 s.
 
 import { api } from '../lib/api.js';
 import { setQuery, refresh } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, stateBadge, modal, confirmDialog, toast, loading, fmt } from '../lib/ui.js';
-import { act, field, poll, errorText, handleAuthError, fetchErrorText } from './common.js';
+import { act, poll, errorText, handleAuthError, fetchErrorText } from './common.js';
 import { scheduledFetch } from './schedule.js';
 
 const TYPE_LABELS = { sync: 'Sync', backfill: 'History fetch', reclassify: 'Reclassify', import: 'Import' };
@@ -111,46 +111,6 @@ function openLog(id, onClose) {
 
 /* ───────────── actions ───────────── */
 
-function openSync() {
-  const users = field({
-    label: 'Only these students (optional)', name: 'users', type: 'textarea', rows: 3, placeholder: 'GitHub usernames, separated by commas, spaces or new lines',
-    hint: 'Leave empty to sync every active student.',
-  });
-  const full = field({
-    label: 'Fetch the whole history again', name: 'full', type: 'checkbox',
-    hint: 'Normally a sync only asks GitHub for pull requests changed since the last sync. A full fetch for everyone takes much longer and uses much more of the GitHub rate limit.',
-  });
-  const form = h('form', { class: 'form', novalidate: true },
-    h('p', null, 'Fetch new and changed pull requests from GitHub now, instead of waiting for the nightly run.'),
-    users.row, full.row);
-  const m = modal({
-    title: 'Sync now', body: form,
-    actions: [{ label: 'Cancel' }, { label: 'Start sync', kind: 'primary', onClick: () => form.requestSubmit() }],
-  });
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    users.setError(null);
-    const list = users.get().split(/[\s,;]+/).map((u) => u.replace(/^@/, '').replace(/^(?:https?:\/\/)?(?:www\.)?github\.com\//i, '').replace(/\/.*$/, '')).filter(Boolean);
-    const bad = list.find((u) => !/^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})$/.test(u));
-    if (bad) { users.setError(`“${bad}” is not a GitHub username.`); users.input.focus(); return; }
-    const body = { full: full.get() };
-    if (list.length) body.users = list;
-    const btn = m.el.querySelectorAll('.dialog-actions .btn')[1];
-    const res = await act(() => api.post('/admin/jobs/sync', body), {
-      button: btn,
-      onError: (err) => {
-        if (err.status === 400) { users.setError(errorText(err)); return true; }
-        if (err.status === 409) { users.setError('A sync is already running. Wait for it to finish, or open its log below.'); return true; }
-        return false;
-      },
-    });
-    if (!res) return;
-    m.close();
-    toast(`Started a ${body.full ? 'full ' : ''}sync for ${list.length ? `${fmt.num(list.length)} ${list.length === 1 ? 'student' : 'students'}` : 'all active students'}.`);
-    refresh();
-  });
-}
-
 async function reclassify(btn) {
   const ok = await confirmDialog(
     'Reclassify every pull request? Categories and all totals are recomputed from the current rules and decisions. Nothing is fetched from GitHub. This takes about a minute.',
@@ -195,7 +155,7 @@ export default async function (el, ctx) {
     const queued = d.items.filter((j) => j.status === 'queued').length;
     status.replaceChildren(...(running + queued ? [h('div', { class: 'notice' },
       h('strong', null, `${running ? `${fmt.num(running)} running` : ''}${running && queued ? ', ' : ''}${queued ? `${fmt.num(queued)} queued` : ''}. `),
-      'Jobs started here run one at a time. This list updates every 5 seconds.')] : []));
+      'Jobs started here run one at a time. This list updates by itself.')] : []));
     status.hidden = !(running + queued);
     list.replaceChildren(jobsTable(d, show), pagination({ ...d, onPage: (page) => setQuery({ page: page > 1 ? page : '' }) }));
   };
@@ -209,7 +169,7 @@ export default async function (el, ctx) {
     pageHead({
       title: 'Jobs',
       lede: 'Fetches from GitHub and recomputations, newest first. New work is fetched every night; start one here when you cannot wait.',
-      actions: [reclassifyBtn, h('button', { type: 'button', class: 'btn', name: 'sync-now', onClick: openSync }, 'Sync selected students')],
+      actions: [reclassifyBtn],
     }),
     scheduled.el,
     status,
@@ -225,7 +185,13 @@ export default async function (el, ctx) {
 
   if (q.job) show(q.job);
 
-  // Re-read the list in place every 5 s: quick while something is live, and it also picks up jobs started elsewhere
-  // (the nightly run, a history fetch queued from Students).
-  return poll(async () => { render(await api.get('/admin/jobs', params)); await scheduled.load(); }, 5000);
+  // Re-read in place: the scheduled-fetch panel every 2 s while a fetch runs (progress and log tail), otherwise every
+  // 6 s like the list. That also picks up jobs started elsewhere (the nightly run, a history fetch queued from Students).
+  let n = 0;
+  return poll(async () => {
+    n++;
+    const wasRunning = scheduled.isRunning();
+    if (wasRunning || n % 3 === 0) await scheduled.load();
+    if (n % 3 === 0 || wasRunning !== scheduled.isRunning()) render(await api.get('/admin/jobs', params));
+  }, 2000);
 }

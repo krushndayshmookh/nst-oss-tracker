@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, categoryBar, barCell, fmt } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, studentCell, csvButton, opts, clean, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, yearLabel, studentCell, csvButton, opts, clean, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -13,12 +13,16 @@ export default async function (el, ctx) {
   const sort = q.sort || 'osMerged';
   const order = q.order || (sort === 'name' ? 'asc' : 'desc');
   const max = data.items.reduce((m, s) => Math.max(m, s.stats.osMerged), 0);
-  const any = Object.keys(filters).length > 0;
+  const any = Boolean(q.q || q.campus || q.year || q.batch || q.hasOs);
+  const past = isPastRange(data.range, meta);
 
   put(el, 
     pageHead({
       title: 'Students',
-      lede: ['Every tracked student, ranked by merged open-source pull requests unless you sort otherwise. ', rangeSentence(data.range)],
+      range: rangeLine(data.range),
+      lede: ['Every tracked student, ranked by merged open-source pull requests unless you sort otherwise. ',
+        data.range ? 'The numbers count pull requests opened or merged in the period above.' : null,
+        past ? ' Year of study is as of today; the batch is shown beside it.' : null],
       actions: [csvButton('/export/students.csv', filters)],
     }),
     rangeControl(meta, ctx),
@@ -43,7 +47,7 @@ export default async function (el, ctx) {
         columns: [
           { key: 'name', label: 'Student', sortable: true, render: (s) => studentCell(s, ctx) },
           { key: 'campus', label: 'Campus' },
-          { key: 'year', label: 'Year', render: (s) => (s.batch ? h('span', { title: `Batch ${s.batch}` }, s.year) : s.year) },
+          { key: 'year', label: 'Year', render: (s) => yearLabel(s, past) },
           { key: 'stats.osMerged', sortKey: 'osMerged', label: 'Merged open-source', num: true, sortable: true, render: (s) => barCell(s.stats.osMerged, max) },
           { key: 'stats.osPrs', sortKey: 'osPrs', label: 'Open-source PRs', num: true, sortable: true },
           { key: 'stats.osMajorMerged', label: 'Major merged', num: true, title: 'Merged into major projects' },

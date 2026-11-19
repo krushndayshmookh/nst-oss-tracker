@@ -8,12 +8,23 @@ import { fmt } from './ui.js';
 
 const lastSync = document.getElementById('last-sync');
 if (lastSync) {
-  api.get('/meta').then((meta) => {
-    if (!meta || !meta.lastSyncAt) return;
-    lastSync.textContent = `Data updated ${fmt.rel(meta.lastSyncAt)}.${meta.updatesPaused ? ' Updates are paused.' : ''}`;
-    lastSync.title = fmt.datetime(meta.lastSyncAt);
-    lastSync.hidden = false;
-  }).catch(() => {});
+  const paused = document.getElementById('sync-paused');
+  const show = (meta) => {
+    if (!meta) return;
+    if (meta.lastSyncAt) {
+      lastSync.textContent = `Data updated ${fmt.rel(meta.lastSyncAt)}.${meta.updatesPaused && !paused ? ' Updates are paused.' : ''}`;
+      lastSync.title = `Last successful fetch from GitHub: ${fmt.datetime(meta.lastSyncAt)}`;
+      lastSync.hidden = false;
+    }
+    if (paused) {
+      paused.textContent = meta.updatesPaused ? 'Updates are paused.' : '';
+      paused.hidden = !meta.updatesPaused;
+    }
+  };
+  const load = () => api.get('/meta').then(show).catch(() => {});
+  load();
+  // keep "updated … ago" honest on a tab left open
+  setInterval(() => { if (!document.hidden) load(); }, 5 * 60 * 1000);
 }
 
 const logout = document.getElementById('admin-logout');

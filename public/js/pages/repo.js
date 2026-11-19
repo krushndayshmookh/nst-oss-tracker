@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, statCard, card, pagination, badge, categoryBadge, overrideBadge, calendarHeatmap, fmt, CATEGORY_HELP } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, link, orgHref, prTable, contributorsTable, fetchActivity, activityCard, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, link, orgHref, prTable, contributorsTable, fetchActivity, activityCard, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -30,7 +30,8 @@ export default async function (el, ctx) {
     pageHead({
       crumbs: [{ label: 'Projects', href: link('/projects', {}, ctx) }, { label: repo.owner, href: orgHref(repo.owner, ctx) }],
       title: repo.name,
-      lede: [repo.description ? `${repo.description} ` : null, rangeSentence(data.range)],
+      range: rangeLine(data.range),
+      lede: repo.description || null,
       actions: [h('a', { class: 'btn ext', href: `https://github.com/${repo.name.split('/').map(encodeURIComponent).join('/')}`, target: '_blank', rel: 'noopener noreferrer' }, 'View on GitHub')],
     }),
     rangeControl(meta, ctx),
@@ -55,7 +56,7 @@ export default async function (el, ctx) {
   if (strip) put(el, strip.el);
 
   put(el, 
-    card({ title: 'Students', note: `${fmt.num(data.students.length)}${data.students.length === 100 ? '+' : ''}`, flush: true }, contributorsTable(data.students, ctx)),
+    card({ title: 'Students', note: `${fmt.num(data.students.length)}${data.students.length === 100 ? '+' : ''}`, flush: true }, contributorsTable(data.students, ctx, { past: isPastRange(data.range, meta) })),
     card({ title: 'Pull requests', note: h('a', { href: link('/prs', { repo: repo.name, category: 'all' }, ctx) }, 'Open in the explorer'), flush: true },
       prTable(prs.items, ctx, { project: false }),
       pagination({ ...prs, onPage: (p) => setQuery({ page: p > 1 ? p : '' }) })),

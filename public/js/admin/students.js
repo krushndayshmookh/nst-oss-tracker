@@ -172,12 +172,12 @@ function openBulk() {
     out);
   let changed = false;
   const m = modal({
-    title: 'Add many students',
+    title: 'Add or update many students',
     wide: true,
     body,
     actions: [
       { label: 'Close' },
-      { label: 'Add students', kind: 'primary', onClick: () => submit() },
+      { label: 'Add or update', kind: 'primary', onClick: () => submit() },
     ],
     onClose: () => { if (changed) refresh(); },
   });
@@ -198,12 +198,12 @@ function openBulk() {
     const body0 = payload(raw);
     if (!body0) { text.setError('The first row must be a header that names the columns, including github_username.'); text.input.focus(); return; }
     const btn = m.el.querySelectorAll('.dialog-actions .btn')[1];
-    btn.textContent = 'Adding…';
+    btn.textContent = 'Working…';
     const res = await act(() => api.post('/admin/students/bulk', body0), {
       button: btn,
       onError: (err) => { if (err.status === 400 || err.status === 413) { text.setError(errorText(err)); return true; } return false; },
     });
-    if (btn.isConnected) btn.textContent = 'Add students';
+    if (btn.isConnected) btn.textContent = 'Add or update';
     if (!res) return;
     if (res.added || res.updated) changed = true;
     out.replaceChildren(
@@ -367,59 +367,213 @@ function statusNotice(counts, q) {
     q.backfill ? [' · ', h('a', { href: href('/students', { ...q, backfill: '', page: '' }) }, 'Show all students')] : null);
 }
 
-function missingBar(data, q) {
-  const counts = data.missingCounts;
-  if (!counts || typeof counts !== 'object') return null; // the server does not report missing data
+const MISSING_FIELD = { batch: 'batch', campus: 'campus', name: 'name', email: 'email', enrolmentNo: 'enrolmentNo' };
+
+/**
+ * "Missing data" chips with counts (SPEC addendum B). They are their own group, apart from the filter bar: the filter
+ * bar's Clear leaves them alone, and several can be on at once (a student missing ANY of the chosen fields is listed).
+ * missingBar(q) → { el, draw(counts) }.
+ */
+function missingBar(q) {
+  const el = h('div', { class: 'missing-bar', role: 'group', 'aria-label': 'Missing data' });
   const active = new Set(String(q.missing || '').split(',').filter(Boolean));
+  const go = (set) => setQuery({ missing: [...set].join(','), page: '' });
   const toggle = (key) => {
+    if (key === 'any') return go(active.has('any') ? [] : ['any']);
     const next = new Set(active);
+    next.delete('any');
     if (next.has(key)) next.delete(key); else next.add(key);
-    setQuery({ missing: [...next].join(','), page: '' });
+    return go(next);
   };
-  return h('div', { class: 'toolbar', role: 'group', 'aria-label': 'Missing data' },
-    h('span', { class: 'muted' }, 'Missing data:'),
-    h('div', { class: 'btn-group' }, Object.keys(MISSING_LABELS).filter((k) => k in counts).map((k) =>
-      h('button', {
-        type: 'button', name: `missing-${k}`, class: ['btn btn-sm', active.has(k) && 'is-on'], 'aria-pressed': active.has(k) ? 'true' : 'false',
-        onClick: () => toggle(k),
-      }, `${MISSING_LABELS[k]} · ${fmt.num(counts[k])}`))));
+  const draw = (counts) => {
+    if (!counts || typeof counts !== 'object') { el.hidden = true; return; } // the server does not report missing data
+    el.hidden = false;
+    const chip = (k, label) => h('button', {
+      type: 'button', name: `missing-${k}`, class: ['btn btn-sm', active.has(k) && 'is-on'], 'aria-pressed': active.has(k) ? 'true' : 'false',
+      onClick: () => toggle(k),
+    }, label, ' · ', h('span', { class: 'count' }, fmt.num(counts[k] ?? 0)));
+    el.replaceChildren(
+      h('div', { class: 'missing-head' },
+        h('strong', null, 'Missing data'),
+        h('span', { class: 'muted' }, active.size
+          ? 'Showing students with any of the selected gaps. Fill them in the table and press Save (or Enter) on each row.'
+          : 'Pick what is missing to list those students, then fill the gaps right in the table.')),
+      h('div', { class: 'btn-group' },
+        'any' in counts ? chip('any', 'Anything missing') : null,
+        Object.keys(MISSING_LABELS).filter((k) => k in counts).map((k) => chip(k, MISSING_LABELS[k])),
+        active.size ? h('button', { type: 'button', class: 'btn btn-sm btn-quiet', name: 'missing-clear', onClick: () => go([]) }, 'Show everyone') : null));
+  };
+  return { el, draw };
 }
 
-function studentsTable(data, q) {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * The editable part of one table row: name, campus, batch, email and enrolment number, saved together with the row's
+ * Save button (or Enter in any of its text boxes; Esc puts the stored values back).
+ * The save is optimistic: the row shows as saved at once; if the server refuses, the row goes back to "unsaved",
+ * the reason is shown under the row's buttons and as a toast, and what was typed stays in the boxes.
+ */
+function rowEditor(s, { onSaved, onDirty }) {
+  const who = displayName(s);
+  const input = (name, label, value, attrs = {}) => h('input', {
+    type: 'text', name: `${name}-${s.username}`, value: value ?? '', 'aria-label': `${label} of ${who}`, placeholder: label,
+    autocomplete: 'off', spellcheck: 'false', 'data-field': name, ...attrs,
+  });
+  const select = (name, label, value, options) => h('select', { name: `${name}-${s.username}`, 'aria-label': `${label} of ${who}`, 'data-field': name },
+    options.map((o) => { const opt = typeof o === 'object' ? o : { value: o, label: o }; return h('option', { value: opt.value, selected: String(opt.value) === String(value ?? '') }, opt.label); }));
+  const f = {
+    name: input('name', 'Name', s.name, { maxlength: 200 }),
+    campus: select('campus', 'Campus', s.campus, CAMPUSES.includes(s.campus) ? CAMPUSES : [...CAMPUSES, s.campus]),
+    batch: select('batch', 'Batch', s.batch ?? '', batchOptions(s.batch).map((o) => (o.value === '' ? { value: '', label: 'No batch' } : o))),
+    email: input('email', 'Email', s.email, { maxlength: 200, inputmode: 'email' }),
+    enrolmentNo: input('enrolmentNo', 'Enrolment no.', s.enrolmentNo, { maxlength: 100 }),
+  };
+  const read = () => ({
+    name: f.name.value.trim(), campus: f.campus.value, batch: f.batch.value ? Number(f.batch.value) : null,
+    email: f.email.value.trim(), enrolmentNo: f.enrolmentNo.value.trim(),
+  });
+  const stored = (st) => ({ name: st.name || '', campus: st.campus, batch: st.batch ?? null, email: st.email || '', enrolmentNo: st.enrolmentNo || '' });
+  let base = stored(s);
+  let saving = false;
+  const diff = () => { const now = read(); return Object.fromEntries(Object.entries(now).filter(([k, v]) => v !== base[k])); };
+
+  const save = h('button', { type: 'button', class: 'btn btn-sm btn-primary', name: `save-${s.username}`, disabled: true, title: 'Save this row (Enter)' }, 'Save');
+  const msg = h('div', { class: 'row-msg', 'aria-live': 'polite' });
+  const badges = h('div', { class: 'row-badges' });
+  const year = h('span', { class: 'sub' });
+  const nameNote = h('span', { class: 'sub' });
+
+  const drawFacts = () => {
+    badges.replaceChildren(...(Array.isArray(s.missing) ? s.missing : []).map((k) => badge(MISSING_LABELS[k] || k, 'warn')));
+    badges.hidden = !badges.childNodes.length;
+    year.textContent = s.batch ? s.year : '';
+    nameNote.textContent = s.name ? '' : `Shown as ${s.username} until a name is set`;
+    nameNote.hidden = Boolean(s.name);
+    for (const [k, fld] of Object.entries(MISSING_FIELD)) f[fld].classList.toggle('is-missing', Array.isArray(s.missing) && s.missing.includes(k));
+  };
+  const say = (text, kind = null) => {
+    msg.className = `row-msg${kind ? ` row-msg-${kind}` : ''}`;
+    msg.textContent = text || '';
+    if (kind === 'error') msg.setAttribute('role', 'alert'); else msg.removeAttribute('role');
+  };
+  const sync = () => {
+    const dirty = Object.keys(diff()).length > 0;
+    save.disabled = !dirty || saving;
+    for (const [k, node] of Object.entries(f)) node.classList.toggle('is-dirty', read()[k] !== base[k]);
+    if (dirty && !saving && !msg.classList.contains('row-msg-error')) say('Not saved yet');
+    else if (!dirty && !saving && msg.textContent === 'Not saved yet') say('');
+    onDirty();
+  };
+  const invalid = (key, text) => {
+    f[key].setAttribute('aria-invalid', 'true');
+    say(text, 'error');
+    f[key].focus();
+  };
+
+  async function submit() {
+    if (saving) return;
+    for (const node of Object.values(f)) node.removeAttribute('aria-invalid');
+    const patch = diff();
+    if (!Object.keys(patch).length) return;
+    if ('email' in patch && patch.email && !EMAIL_RE.test(patch.email)) { invalid('email', 'That is not an email address. Nothing was saved.'); return; }
+    if ('batch' in patch && patch.batch !== null && !(patch.batch >= 2015 && patch.batch <= 2035)) { invalid('batch', 'Batch must be a year from 2015 to 2035. Nothing was saved.'); return; }
+    // optimistic: the row counts as saved from here; a refusal below puts it back
+    const before = base;
+    base = { ...base, ...patch };
+    saving = true;
+    say('Saving…');
+    sync();
+    let res = null;
+    let failure = null;
+    try {
+      res = await api.patch(`/admin/students/${enc(s.username)}`, patch);
+    } catch (err) {
+      failure = err;
+    }
+    saving = false;
+    if (failure) {
+      base = before;
+      if (handleAuthError(failure)) return;
+      const text = failure.status === 404 ? 'This student no longer exists. Reload the list.' : errorText(failure);
+      const hit = ['campus', 'batch', 'email', 'enrolmentNo', 'name'].find((k) => k in patch && new RegExp(k, 'i').test(failure.message || ''));
+      if (hit) f[hit].setAttribute('aria-invalid', 'true');
+      say(`Not saved. ${text}`, 'error');
+      toast(`${who} was not saved. ${text}`, 'error');
+      sync();
+      return;
+    }
+    Object.assign(s, res.student);
+    base = stored(s);
+    // show what the server stored (trimmed, canonical), unless the admin has typed on in the meantime
+    for (const k of Object.keys(patch)) {
+      const typed = read()[k];
+      if (typed === patch[k]) f[k].value = base[k] ?? '';
+    }
+    drawFacts();
+    say('Saved', 'ok');
+    setTimeout(() => { if (msg.textContent === 'Saved') say(''); }, 4000);
+    sync();
+    onSaved(s, patch);
+  }
+
+  const reset = () => {
+    f.name.value = base.name; f.campus.value = base.campus; f.batch.value = base.batch ?? ''; f.email.value = base.email; f.enrolmentNo.value = base.enrolmentNo;
+    for (const node of Object.values(f)) node.removeAttribute('aria-invalid');
+    say('');
+    sync();
+  };
+  for (const node of Object.values(f)) {
+    node.addEventListener('input', () => { node.removeAttribute('aria-invalid'); if (msg.classList.contains('row-msg-error')) say(''); sync(); });
+    node.addEventListener('change', sync);
+    node.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && node.tagName === 'INPUT') { e.preventDefault(); submit(); }
+      if (e.key === 'Escape' && Object.keys(diff()).length) { e.preventDefault(); e.stopPropagation(); reset(); }
+    });
+  }
+  save.addEventListener('click', submit);
+  drawFacts();
+  return { f, save, msg, badges, year, nameNote, isDirty: () => saving || Object.keys(diff()).length > 0, student: () => s };
+}
+
+function studentsTable(data, q, hooks) {
   const sort = q.sort || 'addedAt';
   const order = q.order || (sort === 'name' || sort === 'username' ? 'asc' : 'desc');
-  return table({
-    caption: 'Tracked students',
+  const editors = new Map();
+  const ed = (s) => {
+    if (!editors.has(s.username)) editors.set(s.username, rowEditor(s, hooks));
+    return editors.get(s.username);
+  };
+  const node = table({
+    caption: 'Tracked students. Name, campus, batch, email and enrolment number can be edited in place; each row has its own Save button.',
     compact: true,
     rows: data.items,
     sort,
     order,
     onSort: (s, o) => setQuery({ sort: s, order: o, page: '' }),
-    rowClass: (s) => (s.active ? null : 'muted'),
+    rowClass: (s) => (s.active ? null : 'is-inactive'),
     empty: data.total === 0 && !Object.keys(q).some((k) => !['sort', 'order', 'page'].includes(k) && q[k])
       ? 'No students yet. Use Add student or Add many.'
       : 'No students match these filters.',
     columns: [
       {
-        key: 'name', label: 'Student', sortable: true,
-        render: (s) => h('div', null,
-          h('span', null, displayName(s)), s.active ? null : [' ', badge('Inactive')],
-          h('div', { class: 'sub' }, ghLink(s.username)),
-          Array.isArray(s.missing) && s.missing.length
-            ? h('div', { class: 'sub' }, s.missing.map((k) => [badge(MISSING_LABELS[k] || k, 'warn'), ' '])) : null),
+        key: 'name', label: 'Student', sortable: true, class: 'col-student',
+        render: (s) => h('div', { class: 'cell-stack' },
+          ed(s).f.name,
+          h('div', { class: 'sub' }, ghLink(s.username), s.active ? null : [' ', badge('Inactive')]),
+          ed(s).nameNote,
+          ed(s).badges),
       },
       {
-        key: 'campus', label: 'Campus · batch',
-        render: (s) => h('div', null, s.campus, h('div', { class: 'sub' }, s.batch ? `${s.batch} · ${s.year}` : 'No batch')),
+        key: 'campus', label: 'Campus · batch', class: 'col-cohort',
+        render: (s) => h('div', { class: 'cell-stack' }, ed(s).f.campus, ed(s).f.batch, ed(s).year),
       },
       {
-        key: 'email', label: 'Email · enrolment no.',
-        render: (s) => (s.email || s.enrolmentNo
-          ? h('div', null, s.email ? h('span', { class: 'cell-clip', title: s.email }, s.email) : h('span', { class: 'muted' }, 'No email'), h('div', { class: 'sub' }, s.enrolmentNo || 'No enrolment no.'))
-          : null),
+        key: 'email', label: 'Email · enrolment no.', class: 'col-contact',
+        render: (s) => h('div', { class: 'cell-stack' }, ed(s).f.email, ed(s).f.enrolmentNo),
       },
       {
-        key: 'backfill', label: 'Backfill · last sync', title: 'The fetch of this student’s full pull-request history',
+        key: 'backfill', label: 'Backfill · last sync', title: 'The fetch of this student’s full pull-request history', class: 'col-backfill',
         render: (s) => {
           const b = s.backfill || {};
           const synced = h('div', { class: 'sub', title: s.lastSyncedAt ? `Last synced ${fmt.datetime(s.lastSyncedAt)}` : null },
@@ -431,11 +585,11 @@ function studentsTable(data, q) {
             notFound ? synced : h('div', { class: 'sub cell-clip' }, fetchErrorText(b.error)));
         },
       },
-      { key: 'osMerged', label: 'OS merged', num: true, sortable: true, title: 'Merged open-source pull requests, all time', render: (s) => fmt.num(s.stats.osMerged) },
+      { key: 'osMerged', label: 'OS merged', num: true, sortable: true, class: 'col-os', title: 'Merged open-source pull requests, all time', render: (s) => fmt.num(s.stats.osMerged) },
       {
-        key: 'actions', label: 'Actions',
+        key: 'actions', label: 'Actions', class: 'col-actions',
         render: (s) => {
-          const edit = h('button', { type: 'button', class: 'btn btn-sm', name: `edit-${s.username}`, onClick: () => openEdit(s) }, 'Edit');
+          const edit = h('button', { type: 'button', class: 'btn btn-sm', name: `edit-${s.username}`, title: 'Notes, active or inactive, delete', onClick: () => openEdit(ed(s).student()) }, 'More…');
           const fetchBtn = h('button', {
             type: 'button', class: 'btn btn-sm', name: `backfill-${s.username}`,
             disabled: ['pending', 'running'].includes(s.backfill && s.backfill.status),
@@ -446,11 +600,14 @@ function studentsTable(data, q) {
             ? h('button', { type: 'button', class: 'btn btn-sm btn-danger', name: `deactivate-${s.username}` }, 'Deactivate')
             : h('button', { type: 'button', class: 'btn btn-sm', name: `reactivate-${s.username}` }, 'Reactivate');
           toggle.addEventListener('click', () => (s.active ? deactivate(s, toggle) : reactivate(s, toggle)));
-          return h('div', { class: 'btn-group', style: { flexWrap: 'nowrap' } }, edit, fetchBtn, toggle);
+          return h('div', { class: 'cell-stack' },
+            h('div', { class: 'row-actions' }, ed(s).save, edit, fetchBtn, toggle),
+            ed(s).msg);
         },
       },
     ],
   });
+  return { node, dirty: () => [...editors.values()].filter((e) => e.isDirty()).length };
 }
 
 export default async function (el, ctx) {
@@ -458,21 +615,46 @@ export default async function (el, ctx) {
   const [meta, data, counts] = await Promise.all([getMeta(), api.get('/admin/students', listParams(q)), backfillCounts()]);
 
   const status = h('div');
-  const list = card({ flush: true });
+  const list = card({ flush: true, class: 'edit-table' });
+  const missing = missingBar(q);
+  const unsaved = h('div', { class: 'notice notice-warn', role: 'status', hidden: true });
+  let current = null; // the table on screen
+  const dirtyCount = () => (current ? current.dirty() : 0);
+  const hooks = {
+    onDirty: () => {
+      const n = dirtyCount();
+      unsaved.hidden = n < 2; // one unsaved row says so itself; several get a summary so none is forgotten
+      if (n >= 2) unsaved.textContent = `${fmt.num(n)} rows have changes that are not saved yet. Each row is saved with its own Save button.`;
+    },
+    // after a row is saved the chip counts change; the row itself stays where it is, even if it no longer matches the filter
+    onSaved: async () => {
+      try {
+        const fresh = await api.get('/admin/students', { ...listParams(q), limit: 1, page: '' });
+        missing.draw(fresh.missingCounts);
+      } catch (err) { handleAuthError(err); }
+    },
+  };
   const render = (d, c) => {
     const n = statusNotice(c, q);
     status.replaceChildren(...(n ? [n] : []));
     status.hidden = !n;
-    list.replaceChildren(studentsTable(d, q), pagination({ ...d, onPage: (page) => setQuery({ page: page > 1 ? page : '' }) }));
+    current = studentsTable(d, q, hooks);
+    list.replaceChildren(current.node, pagination({ ...d, onPage: (page) => setQuery({ page: page > 1 ? page : '' }) }));
+    missing.draw(d.missingCounts);
+    hooks.onDirty();
   };
   render(data, counts);
 
+  const filtered = Object.keys(listParams(q)).some((k) => !['sort', 'order', 'page'].includes(k) && q[k]);
   el.append(
     pageHead({
       title: 'Students',
-      lede: `${fmt.num(data.total)} ${Object.keys(listParams(q)).some((k) => !['sort', 'order', 'page'].includes(k) && q[k]) ? 'match these filters' : 'tracked'}. Add students, correct their details, and control whose pull requests count.`,
+      lede: `${fmt.num(data.total)} ${filtered ? 'match these filters' : 'tracked'}. Add students, correct their details, and control whose pull requests count.`,
       actions: [
-        h('a', { class: 'btn', href: api.url('/admin/export/students.csv', { ...listParams(q), sort: '', order: '', page: '' }), download: '', title: 'The students matching the filters below, with e-mail and enrolment number. Edit it and upload it again with “Add or update many”.' }, 'Download CSV'),
+        h('a', {
+          class: 'btn', name: 'download-csv', href: api.url('/admin/export/students.csv', { ...listParams(q), sort: '', order: '', page: '' }), download: 'students-admin.csv',
+          title: `${filtered ? `The ${fmt.num(data.total)} students matching the filters below` : `All ${fmt.num(data.total)} students`}, with e-mail and enrolment number. Edit the file and upload it again with “Add or update many”.`,
+        }, filtered ? `Download CSV (${fmt.num(data.total)})` : 'Download CSV'),
         h('button', { type: 'button', class: 'btn', name: 'add-many', onClick: openBulk }, 'Add or update many'),
         h('button', { type: 'button', class: 'btn btn-primary', name: 'add-student', onClick: openAdd }, 'Add student'),
       ],
@@ -494,18 +676,22 @@ export default async function (el, ctx) {
       values: q,
       onChange: (v) => setQuery({ ...v, order: v.sort === (q.sort || '') ? q.order : '', page: '' }),
     }),
-    ...[missingBar(data, q)].filter(Boolean),
+    missing.el,
+    unsaved,
     list);
 
+  const warn = (e) => { if (dirtyCount()) { e.preventDefault(); e.returnValue = ''; } };
+  window.addEventListener('beforeunload', warn);
+
   // While any history fetch is queued or running, re-read the list in place (no dimming, filters untouched).
+  // Never while a row has unsaved edits or the admin is typing in the table: a redraw would throw the edits away.
   let live = counts.pending + counts.running > 0;
-  if (!live) return undefined;
-  const stop = poll(async () => {
+  const stop = live ? poll(async () => {
     const [d, c] = await Promise.all([api.get('/admin/students', listParams(q)), backfillCounts()]);
-    if (document.querySelector('dialog.dialog[open]') && list.contains(document.activeElement)) return;
+    if (dirtyCount() || list.contains(document.activeElement) || document.querySelector('dialog.dialog[open]')) return;
     render(d, c);
     live = c.pending + c.running > 0;
     if (!live) stop();
-  }, 5000);
-  return stop;
+  }, 5000) : () => {};
+  return () => { stop(); window.removeEventListener('beforeunload', warn); };
 }

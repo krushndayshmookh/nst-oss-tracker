@@ -62,12 +62,64 @@ export function rangeControl(meta, ctx) {
   return rangeBar({ presets: meta.presets, query: ctx.query, onChange: (patch) => setQuery({ ...patch, page: '' }) });
 }
 
-/** "Academic year 2026-27, 1 Jul 2026 – 30 Jun 2027." from the `range` object a ranged response echoes; '' otherwise. */
+/** "AY 2026-27 · 1 Jul 2026 – 30 Jun 2027" as plain text, from the `range` object a ranged response echoes; '' otherwise. */
 export function rangeSentence(range) {
   if (!range || typeof range !== 'object') return '';
   const dates = range.from || range.to ? fmt.range(range.from, range.to) : 'All time';
-  const label = range.label && range.label !== dates ? `${range.label}, ` : '';
-  return `${label}${dates}.`;
+  const label = range.label && range.label !== dates && range.label !== 'Custom range' ? `${range.label} · ` : '';
+  return `${label}${dates}`;
+}
+
+/** The same as nodes for pageHead({ range }): the label in bold, then the dates. null when the response has no range. */
+export function rangeLine(range, extra = null) {
+  if (!range || typeof range !== 'object') return extra ? [extra] : null;
+  const dates = range.from || range.to ? fmt.range(range.from, range.to) : null;
+  const label = range.label && range.label !== 'Custom range' ? range.label : (dates ? null : 'All time');
+  return [
+    label ? h('b', null, label) : null,
+    label && dates ? h('span', { class: 'sep' }, ' · ') : null,
+    dates,
+    extra ? [h('span', { class: 'sep' }, ' · '), extra] : null,
+  ];
+}
+
+const todayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+/** True when the range has not ended yet (so its last month / week is still filling up). */
+export const rangeIsOpen = (range) => !range || !range.to || range.to >= todayIso();
+
+/** True when the whole range lies before the current academic year: year-of-study labels then need the batch beside them. */
+export function isPastRange(range, meta) {
+  const start = meta && meta.academicYear && meta.academicYear.current && meta.academicYear.current.start;
+  return Boolean(range && range.to && start && range.to < start);
+}
+
+/** "3rd year", or "3rd year · Batch 2024" when `past` (the year label is as of today, the range is not). */
+export function yearLabel(s, past = false) {
+  const year = s.year === 'All' ? 'All years' : s.year;
+  if (!s.batch) return year;
+  if (past) return [year, h('span', { class: 'sub-inline muted' }, ` · Batch ${s.batch}`)];
+  return h('span', { title: `Batch ${s.batch}` }, year);
+}
+
+/**
+ * Drop date-range params that cannot be used (malformed date, from after to, unknown preset) from a hash query.
+ * → the cleaned query, or null when nothing had to change. A stale shared link then opens on the default range
+ * instead of an error page whose every link repeats the bad range.
+ */
+export function sanitizeRange(query = {}, meta = null) {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  const out = { ...query };
+  let changed = false;
+  const drop = (k) => { if (k in out) { delete out[k]; changed = true; } };
+  for (const k of ['from', 'to']) if (out[k] && (!iso.test(out[k]) || Number.isNaN(Date.parse(out[k])))) drop(k);
+  if (out.from && out.to && out.from > out.to) { const t = out.from; out.from = out.to; out.to = t; changed = true; }
+  if (out.range && (out.from || out.to)) drop('range');
+  if (out.range && hasRanges(meta) && !meta.presets.some((p) => p.key === out.range)) drop('range');
+  return changed ? out : null;
 }
 
 /* ───────────── small pieces ───────────── */
@@ -84,12 +136,17 @@ export function cohortText(s) {
   return [s.campus && s.campus !== 'Unknown' ? s.campus : null, s.year && s.year !== 'Unknown' ? s.year : null].filter(Boolean).join(' · ');
 }
 
+/** cohortText plus the batch, for lists shown under a past academic year. */
+export function cohortTextPast(s) {
+  return [cohortText(s), s.batch ? `Batch ${s.batch}` : null].filter(Boolean).join(' · ');
+}
+
 /** Table cell for a student: name → profile here, GitHub handle underneath. */
-export function studentCell(s, ctx, { sub = 'github' } = {}) {
+export function studentCell(s, ctx, { sub = 'github', past = false } = {}) {
   return h('div', null,
     h('a', { href: link(`/students/${encodeURIComponent(s.username)}`, {}, ctx) }, studentName(s)),
     sub === 'github' ? h('div', { class: 'sub' }, ghLink(s.username)) : null,
-    sub === 'cohort' && cohortText(s) ? h('div', { class: 'sub' }, cohortText(s)) : null);
+    sub === 'cohort' && cohortText(s) ? h('div', { class: 'sub' }, past ? cohortTextPast(s) : cohortText(s)) : null);
 }
 
 export function repoHref(name, ctx) {
@@ -167,13 +224,13 @@ export function prTable(rows, ctx, { student = true, project = true, sort = null
 }
 
 /** Students-in-this-project table (repo and org pages). Rows are Student plus { prs, merged }. */
-export function contributorsTable(rows, ctx, { empty = 'No students yet.', caption = 'Students' } = {}) {
+export function contributorsTable(rows, ctx, { empty = 'No students in this period.', caption = 'Students', past = false } = {}) {
   return table({
     caption, empty, rows,
     columns: [
       { key: 'name', label: 'Student', render: (s) => studentCell(s, ctx) },
       { key: 'campus', label: 'Campus' },
-      { key: 'year', label: 'Year' },
+      { key: 'year', label: 'Year', render: (r) => yearLabel(r, past) },
       { key: 'prs', label: 'PRs here', num: true },
       { key: 'merged', label: 'Merged here', num: true },
     ],
@@ -190,26 +247,49 @@ export function fetchActivity(meta, params) {
   return api.get('/activity', clean(params)).catch(() => null);
 }
 
+const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+/** One sentence on the weekly rhythm from byWeekday rows, or null when there is too little to say. */
+export function weekdaySentence(byWeekday, key = 'opened') {
+  const v = WEEKDAYS.map((_, i) => ((byWeekday || []).find((d) => d.dow === i + 1) || {})[key] || 0);
+  const total = v.reduce((x, y) => x + y, 0);
+  if (total < 10) return null;
+  const top = v.indexOf(Math.max(...v));
+  return `Most on ${DAY_NAMES[top]}s (${fmt.pct(v[top], total)}); ${fmt.pct(v[5] + v[6], total)} at weekends.`;
+}
+
 /**
- * "Activity in this period" card: calendar heatmap + weekday bars. Returns null when there is nothing to show.
- * Call `draw(barChart)` on the result once the card is in the page; it returns the chart handle to destroy.
+ * "When the work happened" card for one student / project / organisation: calendar heatmap + weekday bars.
+ * Returns null when there is nothing to show. Call `draw(barChart)` on the result once the card is in the page;
+ * it returns the chart handle to destroy.
  */
-export function activityCard(activity, ctx, { card, calendarHeatmap, linkQuery = {}, unit = 'pull requests opened' }) {
+export function activityCard(activity, ctx, { card, calendarHeatmap, linkQuery = {}, unit = 'pull requests opened', title = 'When the work happened' }) {
   if (!activity || !Array.isArray(activity.byWeekday)) return null;
+  const opened = (activity.totals && activity.totals.opened) || 0;
   const canvas = h('canvas');
-  const node = card({ title: 'Activity in this period', note: h('a', { href: link('/activity', linkQuery, ctx) }, 'See all activity') },
-    h('div', { class: 'grid grid-main' },
-      Array.isArray(activity.byDate) && activity.byDate.length
-        ? calendarHeatmap(activity.byDate.map((d) => ({ date: d.date, value: d.opened })), { unit })
-        : h('p', { class: 'muted' }, 'The range is too long for a day-by-day view.'),
-      h('div', { class: 'chart-box chart-box-sm' }, canvas)));
+  const days = Array.isArray(activity.byDate) ? activity.byDate : [];
+  const activeDays = days.filter((d) => d.opened > 0).length;
+  const sentence = weekdaySentence(activity.byWeekday);
+  const node = card({ title, note: h('a', { href: link('/activity', linkQuery, ctx) }, 'Full activity breakdown') },
+    opened === 0
+      ? h('p', { class: 'muted' }, 'No pull requests were opened in this period.')
+      : h('div', { class: 'split split-even' },
+        h('div', null,
+          h('h3', { class: 'mini-title' }, days.length ? `Day by day: pull requests opened on ${fmt.num(activeDays)} of ${fmt.num(days.length)} days` : 'Day by day'),
+          days.length
+            ? calendarHeatmap(days.map((d) => ({ date: d.date, value: d.opened })), { unit })
+            : h('p', { class: 'muted' }, 'This range is too long for a day-by-day view. Choose a range of two years or less.')),
+        h('div', null,
+          h('h3', { class: 'mini-title' }, 'By day of the week'),
+          h('div', { class: 'chart-box chart-box-sm' }, canvas),
+          sentence ? h('p', { class: 'card-note' }, sentence) : null)));
   const byDow = new Map(activity.byWeekday.map((d) => [d.dow, d]));
   return {
     el: node,
-    draw: (barChart) => barChart(canvas, {
+    draw: (barChart) => (opened === 0 ? { destroy() {} } : barChart(canvas, {
       labels: WEEKDAYS,
       series: [{ label: 'Opened', data: WEEKDAYS.map((_, i) => (byDow.get(i + 1) || {}).opened || 0), color: 1 }],
       label: 'Pull requests opened by day of the week',
-    }),
+    })),
   };
 }

@@ -8,12 +8,10 @@ import {
 } from '../lib/ui.js';
 import { lineChart, barChart, doughnutChart } from '../lib/charts.js';
 import {
-  getMeta, hasRanges, rangeParams, rangeControl, rangeSentence, link, studentCell, repoHref, orgHref, csvButton, opts, clean, put
+  getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeIsOpen, isPastRange, yearLabel, activityCard, link, studentCell, repoHref, orgHref, csvButton, opts, clean, put
 } from './common.js';
 
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-function campusTable(campuses) {
+function campusTable(campuses, past) {
   const rows = [];
   const byCampus = new Map((campuses.totals || []).map((t) => [t.campus, t]));
   let last = null;
@@ -33,7 +31,7 @@ function campusTable(campuses) {
     empty: 'No data yet. An admin needs to import or add students.',
     columns: [
       { key: 'campus', label: 'Campus', render: (r) => (r._kind === 'total' ? 'All campuses' : r._kind === 'subtotal' ? `${r.campus} total` : r.campus) },
-      { key: 'year', label: 'Year', render: (r) => (r.year === 'All' ? 'All years' : r.batch ? h('span', { title: `Batch ${r.batch}` }, r.year) : r.year) },
+      { key: 'year', label: 'Year', render: (r) => yearLabel(r, past) },
       { key: 'students', label: 'Students', num: true },
       { key: 'withAnyPr', label: 'Any PR', num: true, title: 'Students with at least one pull request', render: share('withAnyPr') },
       { key: 'withOsPr', label: 'Open-source PR', num: true, title: 'Students with at least one open-source pull request', render: share('withOsPr') },
@@ -84,15 +82,18 @@ export default async function (el, ctx) {
   const campusCount = (meta.campuses || []).filter((c) => c !== 'Unknown').length;
 
   // ── head, range, filters ──
-  const sentence = rangeSentence(overview.range);
+  const open = rangeIsOpen(overview.range);
+  const past = isPastRange(overview.range, meta);
+  const ranged = Boolean(overview.range && (overview.range.from || overview.range.to));
   put(el, 
     pageHead({
       title: 'Open-source work by NST students',
       lede: [
         `${fmt.num(meta.counts ? meta.counts.students : students.tracked)} students tracked across ${campusCount} campuses. `,
         'The headline counts pull requests merged into established public projects; coursework, practice repositories and personal projects are shown separately. ',
-        sentence,
+        ranged ? 'Every figure on this page counts pull requests opened or merged in the period above.' : null,
       ],
+      range: rangeLine(overview.range),
       actions: [csvButton('/export/students.csv', { ...cohort, ...range })],
     }),
     rangeControl(meta, ctx),
@@ -122,7 +123,7 @@ export default async function (el, ctx) {
       label: 'Merged PRs in major projects', value: prs.osMergedByTier.major, sub: `${fmt.pct(prs.osMergedByTier.major, prs.osMerged)} of merged`,
       href: link('/prs', { ...cohort, state: 'merged', tier: 'major' }, ctx), title: 'See the pull requests merged into major projects',
     }),
-    statCard({ label: 'Open-source PRs awaiting review', value: prs.osOpen, sub: 'open now', href: link('/prs', { ...cohort, state: 'open' }, ctx) }),
+    statCard({ label: 'Open-source PRs awaiting review', value: prs.osOpen, sub: ranged ? 'opened in the period, open now' : 'open now', href: link('/prs', { ...cohort, state: 'open' }, ctx) }),
   ));
 
   // ── trend + funnel ──
@@ -135,7 +136,7 @@ export default async function (el, ctx) {
   const before = monthly.slice(-25, -13);
   const sum = (list, key) => list.reduce((s, m) => s + (m[key] || 0), 0);
   let trendNote = null;
-  if (recent.length === 12 && before.length >= 11 && sum(before, 'osMerged') > 0) {
+  if (open && recent.length === 12 && before.length >= 11 && sum(before, 'osMerged') > 0) {
     const a = sum(recent, 'osMerged');
     const b = sum(before, 'osMerged');
     const change = Math.round(((a - b) / b) * 100);
@@ -147,7 +148,7 @@ export default async function (el, ctx) {
     h('p', { class: 'card-note' },
       trendNote, trendNote ? ' ' : null,
       allOpened ? `Across all categories students opened ${fmt.num(allOpened)} pull requests in the same months. ` : null,
-      'The current month is incomplete.'));
+      open ? 'The current month is incomplete.' : null));
   const funnelCard = card({ title: 'From tracked to merged', note: scope || null },
     funnel([
       { label: 'Students tracked', value: students.tracked },
@@ -159,18 +160,25 @@ export default async function (el, ctx) {
     h('p', { class: 'card-note' }, 'Each bar is a share of the students tracked.'));
   put(el, h('div', { class: 'grid grid-main' }, trendCard, funnelCard));
 
+  // ── activity strip: calendar + weekday, linking to the Activity page (needs GET /api/activity) ──
+  const strip = activityCard(activity, ctx, {
+    card, calendarHeatmap, linkQuery: cohort, unit: 'open-source pull requests opened', title: 'When the work happens',
+  });
+  if (strip) put(el, strip.el);
+
   // ── campus by year ──
   const cs = campusSeries(campuses);
   const shareCanvas = canvas();
   const mergedCanvas = canvas();
-  const campusNote = filtered ? `All campuses and years. The filter above (${scope}) does not apply here.` : 'Year of study as of today.';
+  const campusNote = [filtered ? `All campuses and years. The filter above (${scope}) does not apply here. ` : null,
+    past ? 'Year of study is as of today; the batch is shown beside it.' : 'Year of study as of today.'];
   put(el, h('div', { class: 'section-head' }, h('h2', null, 'Campus by year'), h('span', { class: 'muted' }, campusNote)));
   if (cs.years.length && cs.names.length) {
     put(el, h('div', { class: 'grid grid-2' },
       card({ title: 'Students with a merged open-source PR', note: '% of each cohort' }, h('div', { class: 'chart-box chart-box-sm' }, shareCanvas)),
       card({ title: 'Merged open-source PRs', note: 'count per cohort' }, h('div', { class: 'chart-box chart-box-sm' }, mergedCanvas))));
   }
-  put(el, card({ flush: true }, campusTable(campuses)));
+  put(el, card({ flush: true }, campusTable(campuses, past)));
 
   // ── top projects, organisations, students ──
   const seeAll = (text, to) => h('a', { href: to }, text);
@@ -183,7 +191,7 @@ export default async function (el, ctx) {
     h('div', { class: 'grid grid-3' },
       card({ title: 'Top projects', note: seeAll('All projects', link('/projects', {}, ctx)), flush: true },
         table({
-          compact: true, caption: 'Top projects by merged open-source pull requests', rows: overview.topRepos, empty: 'No merged open-source pull requests yet.',
+          compact: true, caption: 'Top projects by merged open-source pull requests', rows: overview.topRepos, empty: 'No merged open-source pull requests in this period.',
           columns: [
             {
               key: 'name', label: 'Project',
@@ -208,7 +216,7 @@ export default async function (el, ctx) {
         table({
           compact: true, caption: 'Students by merged open-source pull requests', rows: overview.topStudents, empty: 'No merged open-source pull requests yet.',
           columns: [
-            { key: 'name', label: 'Student', render: (s) => studentCell(s, ctx, { sub: 'cohort' }) },
+            { key: 'name', label: 'Student', render: (s) => studentCell(s, ctx, { sub: 'cohort', past }) },
             { key: 'osMerged', label: 'Merged', num: true, render: (s) => barCell(s.stats.osMerged, maxStudent) },
           ],
         }))),
@@ -233,18 +241,6 @@ export default async function (el, ctx) {
           `Only the ${fmt.pct(prs.byCategory.open_source, prs.total)} classified as open source count towards the headline. `,
           h('a', { href: link('/about', {}, ctx) }, 'How categories work')))),
   );
-
-  // ── activity strip (needs GET /api/activity) ──
-  let weekdayCanvas = null;
-  if (activity && Array.isArray(activity.byWeekday)) {
-    weekdayCanvas = canvas();
-    put(el, card({ title: 'Activity in this period', note: h('a', { href: link('/activity', cohort, ctx) }, 'See all activity') },
-      h('div', { class: 'grid grid-main' },
-        Array.isArray(activity.byDate) && activity.byDate.length
-          ? calendarHeatmap(activity.byDate.map((d) => ({ date: d.date, value: d.opened })), { unit: 'open-source pull requests opened' })
-          : h('p', { class: 'muted' }, 'The range is too long for a day-by-day view.'),
-        h('div', { class: 'chart-box chart-box-sm' }, weekdayCanvas))));
-  }
 
   // charts are created after the canvases are in the page element; Chart.js sizes them once that is attached
   charts.push(lineChart(trendCanvas, {
@@ -271,13 +267,7 @@ export default async function (el, ctx) {
       label: `Open-source pull requests: ${fmt.num(prs.osMerged)} merged, ${fmt.num(prs.osOpen)} open, ${fmt.num(osClosed)} closed without merging`,
     }));
   }
-  if (weekdayCanvas) {
-    const byDow = new Map(activity.byWeekday.map((d) => [d.dow, d]));
-    charts.push(barChart(weekdayCanvas, {
-      labels: WEEKDAYS, series: [{ label: 'Opened', data: WEEKDAYS.map((_, i) => (byDow.get(i + 1) || {}).opened || 0), color: 1 }],
-      label: 'Open-source pull requests opened by day of the week',
-    }));
-  }
+  if (strip) charts.push(strip.draw(barChart));
 
   return () => charts.forEach((c) => c.destroy());
 }

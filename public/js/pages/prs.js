@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, pagination, card, TIERS, TIER_LABELS, STATE_LABELS } from '../lib/ui.js';
 import {
-  getMeta, hasRanges, rangeParams, rangeControl, rangeSentence, link, repoHref, orgHref, categoryOptions, csvButton, opts, clean, prTable, put
+  getMeta, hasRanges, rangeParams, rangeControl, rangeLine, link, repoHref, orgHref, categoryOptions, csvButton, opts, clean, prTable, put
 } from './common.js';
 
 export default async function (el, ctx) {
@@ -29,7 +29,9 @@ export default async function (el, ctx) {
   put(el, 
     pageHead({
       title: 'Pull requests',
-      lede: ['Every pull request by a tracked student to a public repository. Open-source ones are shown unless you choose another category. ', rangeSentence(data.range)],
+      lede: ['Every pull request by a tracked student to a public repository. Open-source ones are shown unless you choose another category. ',
+        data.range && (data.range.from || data.range.to) ? (q.state === 'merged' ? 'Listed: pull requests merged in the period.' : 'Listed: pull requests opened in the period, and those merged in it.') : null],
+      range: rangeLine(data.range),
       actions: [csvButton('/export/prs.csv', filters)],
     }),
     rangeControl(meta, ctx),

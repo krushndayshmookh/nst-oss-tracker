@@ -624,13 +624,17 @@ export function tabs(items, { onSelect = null, label = 'Sections' } = {}) {
   }));
 }
 
-/** Page header: pageHead({ title, lede?, crumbs?: [{ label, href }], actions?: Node[] }) → Element (.page-head). */
-export function pageHead({ title, lede = null, crumbs = null, actions = null }) {
+/**
+ * Page header: pageHead({ title, range?, lede?, crumbs?: [{ label, href }], actions?: Node[] }) → Element (.page-head).
+ * `range` is the active date range, shown as its own line under the title ("AY 2026-27 · 1 Jul 2026 – 30 Jun 2027").
+ */
+export function pageHead({ title, lede = null, crumbs = null, actions = null, range = null }) {
   return h('header', { class: 'page-head' },
     h('div', null,
       crumbs && crumbs.length ? h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb' },
         crumbs.map((c, i) => [i ? ' / ' : null, c.href ? h('a', { href: c.href }, c.label) : c.label])) : null,
       h('h1', null, title),
+      range ? h('p', { class: 'page-range' }, range) : null,
       lede ? h('p', { class: 'lede' }, lede) : null),
     actions ? h('div', { class: 'toolbar' }, actions) : null);
 }
@@ -656,7 +660,6 @@ export function rangeBar({ presets = [], query = {}, onChange, defaultKey = 'ay'
   const custom = Boolean(query.from || query.to);
   const activeKey = custom ? null : (query.range || defaultKey);
   const emit = (patch) => { if (onChange) onChange({ from: '', to: '', range: '', ...patch }); };
-  const active = presets.find((p) => p.key === activeKey);
   const fromId = nextId('range-from');
   const toId = nextId('range-to');
   const from = h('input', { type: 'date', id: fromId, name: 'from', value: query.from || '', class: query.from ? 'is-set' : null, max: query.to || null });
@@ -672,45 +675,84 @@ export function rangeBar({ presets = [], query = {}, onChange, defaultKey = 'ay'
     }, p.label || p.key))),
     h('div', { class: 'rangebar-custom' },
       h('label', { for: fromId }, 'From'), from,
-      h('label', { for: toId }, 'to'), to),
-    h('span', { class: 'rangebar-now muted' }, custom ? fmt.range(query.from, query.to) : active ? fmt.range(active.from, active.to) : ''));
+      h('label', { for: toId }, 'to'), to));
 }
 
-function heatLevel(value, max) {
-  const v = Number(value) || 0;
-  if (v <= 0 || !max) return 0;
-  return Math.max(1, Math.min(4, Math.ceil((v / max) * 4)));
+/**
+ * Five-step scale for a heatmap. Steps start at the 40th, 70th and 90th percentile of the non-zero values rather than by the largest one,
+ * so a single outlier (one 120-PR day) does not flatten every other cell into the palest step.
+ * → { level(value) → 0..4, bounds: lowest value of steps 1..4 }
+ */
+function heatScale(values) {
+  const nz = values.map((v) => Number(v) || 0).filter((v) => v > 0).sort((x, y) => x - y);
+  if (!nz.length) return { level: () => 0, bounds: [] };
+  const at = (f) => nz[Math.min(nz.length - 1, Math.floor(f * nz.length))];
+  const bounds = [nz[0]];
+  for (const f of [0.4, 0.7, 0.9]) { const v = at(f); if (v > bounds[bounds.length - 1]) bounds.push(v); }
+  // few distinct values: let the largest take the darkest step so the scale is not all pale
+  const top = nz[nz.length - 1];
+  if (bounds.length < 4 && top > bounds[bounds.length - 1]) bounds.push(top);
+  const steps = bounds.length;
+  const level = (value) => {
+    const v = Number(value) || 0;
+    if (v <= 0) return 0;
+    let n = 0;
+    for (const bnd of bounds) if (v >= bnd) n += 1;
+    // spread fewer than four steps over the 1..4 palette (2 steps → 2 and 4)
+    return steps >= 4 ? n : Math.max(1, Math.round((n / steps) * 4));
+  };
+  return { level, bounds };
 }
 
-function heatKey(unit) {
-  return h('div', { class: 'heat-key muted', 'aria-hidden': 'true' }, 'Fewer',
-    [0, 1, 2, 3, 4].map((l) => h('i', { class: `heat-${l}` })), 'More', unit ? ` ${unit}` : null);
+function heatKey(unit, scale) {
+  const b = (scale && scale.bounds) || [];
+  const darkest = b.length >= 2 ? `Darkest: ${fmt.num(b[b.length - 1])} or more` : null;
+  return h('div', { class: 'heat-key muted', 'aria-hidden': 'true' },
+    h('span', null, 'None'), h('i', { class: 'heat-0' }), h('span', { class: 'heat-key-gap' }, 'Fewer'),
+    [1, 2, 3, 4].map((l) => h('i', { class: `heat-${l}` })), h('span', null, 'More'),
+    darkest ? h('span', { class: 'heat-key-note' }, darkest) : null);
 }
+
+const WEEKDAY_LABELS = ['Mon', '', 'Wed', '', 'Fri', '', 'Sun'];
 
 /**
  * Calendar heatmap, one square per day, weeks as columns (Monday on top).
  * calendarHeatmap([{ date: 'YYYY-MM-DD', value }], { unit? = 'pull requests', label? }) → Element (.calendar)
- * Pass every day in the range (zero-filled, as /api/activity byDate returns). Scrolls sideways on narrow screens.
+ * Pass every day in the range (zero-filled, as /api/activity byDate returns). Squares grow with the space available
+ * (11 to 16 px) and the grid scrolls sideways when a long range does not fit.
  */
 export function calendarHeatmap(days, { unit = 'pull requests', label = null } = {}) {
   const list = (days || []).filter((d) => /^\d{4}-\d{2}-\d{2}/.test(String(d.date)));
   const max = list.reduce((m, d) => Math.max(m, Number(d.value) || 0), 0);
   const total = list.reduce((m, d) => m + (Number(d.value) || 0), 0);
+  const scale = heatScale(list.map((d) => d.value));
   const grid = h('div', { class: 'calendar-grid', 'aria-hidden': 'true' });
   const utc = (s) => new Date(Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10))));
+  grid.append(h('span'), ...WEEKDAY_LABELS.map((d) => h('span', { class: 'calendar-dow' }, d)));
   let week = null;
-  const startWeek = (text) => { week = { label: h('span', { class: 'calendar-month' }, text || ''), n: 0 }; grid.append(week.label); };
+  let weeks = 0;
+  let lastLabelWeek = -9;
+  let firstLabel = null;
+  const startWeek = () => { week = h('span', { class: 'calendar-month' }); weeks += 1; grid.append(week); };
   list.forEach((d, i) => {
     const date = utc(String(d.date));
     const dow = (date.getUTCDay() + 6) % 7; // Monday = 0
-    if (i === 0) { startWeek(MONTH_SHORT.format(date)); for (let k = 0; k < dow; k++) grid.append(h('i', { class: 'heat-blank' })); }
-    else if (dow === 0) startWeek('');
-    if (date.getUTCDate() === 1 && i > 0) week.label.textContent = MONTH_SHORT.format(date);
-    grid.append(h('i', { class: `heat-${heatLevel(d.value, max)}`, title: `${fmt.num(d.value || 0)} on ${DAY_UTC.format(date)}` }));
+    if (i === 0) { startWeek(); for (let k = 0; k < dow; k++) grid.append(h('i', { class: 'heat-blank' })); }
+    else if (dow === 0) startWeek();
+    // month name over the week that holds the 1st (and over the first week), never two labels on adjacent weeks
+    // a partial first month gives way to the month that starts right after it
+    if (date.getUTCDate() === 1 && i > 0 && firstLabel && weeks - lastLabelWeek <= 2) { firstLabel.textContent = ''; firstLabel = null; lastLabelWeek = -9; }
+    if ((i === 0 || date.getUTCDate() === 1) && weeks - lastLabelWeek > 2) {
+      firstLabel = i === 0 ? week : null;
+      week.textContent = MONTH_SHORT.format(date) + (date.getUTCMonth() === 0 || lastLabelWeek === -9 ? ` ${String(date.getUTCFullYear()).slice(2)}` : '');
+      lastLabelWeek = weeks;
+    }
+    grid.append(h('i', { class: `heat-${scale.level(d.value)}`, title: `${fmt.num(d.value || 0)} ${unit} on ${WEEKDAY_LONG.format(date)} ${DAY_UTC.format(date)}` }));
   });
   return h('div', { class: 'calendar', role: 'img', 'aria-label': label || `${fmt.num(total)} ${unit} over ${fmt.num(list.length)} days; busiest day ${fmt.num(max)}` },
-    h('div', { class: 'calendar-scroll', tabindex: '0' }, grid), heatKey(unit));
+    h('div', { class: 'calendar-scroll', tabindex: '0', style: { '--weeks': String(Math.max(1, weeks)) } }, grid), heatKey(unit, scale));
 }
+const WEEKDAY_LONG = new Intl.DateTimeFormat('en-GB', { weekday: 'long', timeZone: 'UTC' });
 const MONTH_SHORT = new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone: 'UTC' });
 
 /**
@@ -719,11 +761,11 @@ const MONTH_SHORT = new Intl.DateTimeFormat('en-GB', { month: 'short', timeZone:
  * Empty strings in `cols` leave that column unlabelled (label every third hour).
  */
 export function heatGrid({ rows, cols, value, unit = 'pull requests', label = null, cellTitle = null }) {
-  let max = 0;
-  const values = rows.map((_, r) => cols.map((__, c) => { const v = Number(value(r, c)) || 0; if (v > max) max = v; return v; }));
+  const values = rows.map((_, r) => cols.map((__, c) => Number(value(r, c)) || 0));
+  const scale = heatScale(values.flat());
   const grid = h('div', { class: 'heatgrid-grid', 'aria-hidden': 'true', style: { '--cols': String(cols.length) } },
     h('span'), cols.map((c) => h('span', { class: 'heatgrid-col' }, c)),
     rows.map((name, r) => [h('span', { class: 'heatgrid-row' }, name),
-      cols.map((_, c) => h('i', { class: `heat-${heatLevel(values[r][c], max)}`, title: cellTitle ? cellTitle(r, c, values[r][c]) : `${fmt.num(values[r][c])} ${unit}` }))]));
-  return h('div', { class: 'heatgrid', role: 'img', 'aria-label': label || `Heatmap of ${unit}, ${rows.length} by ${cols.length}` }, grid, heatKey(unit));
+      cols.map((_, c) => h('i', { class: `heat-${scale.level(values[r][c])}`, title: cellTitle ? cellTitle(r, c, values[r][c]) : `${fmt.num(values[r][c])} ${unit}` }))]));
+  return h('div', { class: 'heatgrid', role: 'img', 'aria-label': label || `Heatmap of ${unit}, ${rows.length} by ${cols.length}` }, grid, heatKey(unit, scale));
 }
