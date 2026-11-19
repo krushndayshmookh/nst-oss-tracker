@@ -48,10 +48,8 @@ spec:
               command: ["node", "scripts/sync.js"]
               envFrom:
                 - secretRef:
-                    name: oss-status-secrets
+                    name: oss-status-secrets   # MONGODB_URI (with the app user's password) comes from here: MongoDB auth is on
               env:
-                - name: MONGODB_URI
-                  value: mongodb://mongo:27017
                 - name: MONGODB_DB
                   value: oss_status
                 - name: NODE_ENV

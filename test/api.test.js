@@ -557,6 +557,15 @@ test('admin overrides are applied synchronously and can be undone', async () => 
   assert.deepEqual([owners.total, owners.items[0].login], [7, 'apache']);
   assert.deepEqual((await app.get('/api/admin/review/owners?override=any&sort=repos')).body.items.map((o) => o.login).sort(), ['midorg', 'nst-sdc']);
   assert.deepEqual((await app.get('/api/admin/review/owners?q=TINY')).body.items.map((o) => o.login), ['tiny']);
+  // sort=prs honours order=asc (the tie-breaker used to overwrite the direction)
+  for (const kind of ['repos', 'owners']) {
+    const desc = (await app.get(`/api/admin/review/${kind}?sort=prs`)).body.items.map((x) => x.stats.prs);
+    const asc = (await app.get(`/api/admin/review/${kind}?sort=prs&order=asc`)).body.items.map((x) => x.stats.prs);
+    assert.ok(desc[0] > desc.at(-1), `${kind}: the fixture has different PR counts`);
+    assert.deepEqual(asc, [...asc].sort((x, y) => x - y), `${kind} ascending`);
+    assert.deepEqual(desc, [...desc].sort((x, y) => y - x), `${kind} descending`);
+    assert.equal(asc[0], desc.at(-1));
+  }
 
   // validation + 404s
   assert.equal((await app.post('/api/admin/prs/override', { url, override: 'maybe' })).status, 400);
