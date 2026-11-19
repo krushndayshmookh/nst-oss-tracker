@@ -1,0 +1,25 @@
+{
+  "name": "oss-status",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NST open source status dashboard (oss.nstsdc.org)",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "vendor": "node -e \"const fs=require('fs');try{fs.mkdirSync('public/vendor',{recursive:true});fs.copyFileSync('node_modules/chart.js/dist/chart.umd.js','public/vendor/chart.umd.js');console.log('vendored chart.umd.js')}catch(e){console.warn('vendor skipped: '+e.message)}\"",
+    "postinstall": "npm run vendor --silent",
+    "import": "node scripts/import_legacy.js",
+    "sync": "node scripts/sync.js",
+    "backfill": "node scripts/backfill.js",
+    "reclassify": "node scripts/reclassify.js"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.7",
+    "express": "^5.1.0",
+    "mongodb": "^6.12.0"
+  }
+}

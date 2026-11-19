@@ -1,0 +1,10 @@
+node_modules/
+data/
+.tmp/
+.env
+.env.*
+!.env.example
+.github-token
+.admin-password
+*.log
+.DS_Store

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NST Open Source admin</title>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0b5d4d" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#12201c" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b5d4d'/%3E%3Cpath d='M9 9v14M9 16c8 0 14-1 14-7' fill='none' stroke='%23f2b632' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='9' cy='8' r='3' fill='%23f2b632'/%3E%3Ccircle cx='9' cy='24' r='3' fill='%23f2b632'/%3E%3Ccircle cx='23' cy='8' r='3' fill='%23f2b632'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="is-admin">
+  <a class="skip-link" href="#app">Skip to content</a>
+
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="brand" href="#/" aria-label="NST Open Source admin, start page">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <path d="M8 8v16M8 16c9 0 16-1 16-8" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="8" cy="7" r="3.5" fill="currentColor"/>
+          <circle cx="8" cy="25" r="3.5" fill="currentColor"/>
+          <circle cx="24" cy="7" r="3.5" fill="currentColor"/>
+        </svg>
+        <span class="brand-text">
+          <span class="brand-name">NST Open Source</span>
+          <span class="brand-sub">Newton School of Technology</span>
+        </span>
+        <span class="brand-tag">Admin</span>
+      </a>
+      <nav id="admin-nav" class="site-nav" aria-label="Admin" hidden>
+        <a data-nav href="#/students">Students</a>
+        <a data-nav href="#/review">Review</a>
+        <a data-nav href="#/prs">Pull requests</a>
+        <a data-nav href="#/overrides">Overrides</a>
+        <a data-nav href="#/rules">Rules</a>
+        <a data-nav href="#/jobs">Jobs</a>
+        <span class="nav-end"><button type="button" class="btn btn-sm" id="admin-logout">Sign out</button></span>
+      </nav>
+    </div>
+  </header>
+
+  <main id="app" tabindex="-1">
+    <noscript><p>The admin area needs JavaScript.</p></noscript>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer-inner">
+      <span>Admin area. Changes here are visible on the public site straight away.</span>
+      <span class="footer-end"><a href="/">View the public site</a></span>
+    </div>
+  </footer>
+
+  <script type="module" src="/js/lib/shell.js"></script>
+  <script type="module" src="/js/admin/main.js"></script>
+</body>
+</html>

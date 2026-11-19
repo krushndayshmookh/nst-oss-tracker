@@ -1,0 +1,60 @@
+{
+  "_comment": "Edit and re-run scripts/build_csv.py. Matching is case-insensitive.",
+  "min_stars_credible": 50,
+  "tiers": {
+    "major": 1000,
+    "established": 200,
+    "emerging": 50
+  },
+  "nst_orgs": [
+    "nst-sdc",
+    "NST-DEVFORGE",
+    "S-AI-Projects",
+    "Newton-School",
+    "devforge-nst",
+    "devclub-nstru",
+    "SASTxNST",
+    "DCODE-HQ"
+  ],
+  "nst_owner_keywords": [
+    "nst",
+    "newton",
+    "devforge",
+    "adypu",
+    "rishihood",
+    "svyasa",
+    "smru"
+  ],
+  "practice_repos": [
+    "firstcontributions/first-contributions",
+    "zero-to-mastery/start-here-guidelines",
+    "MunGell/awesome-for-beginners",
+    "github/docs-content-practice",
+    "Syknapse/Contribute-To-This-Project",
+    "codeisscience/first-contribution"
+  ],
+  "practice_keywords": [
+    "first-contribution",
+    "firstcontribution",
+    "hacktoberfest",
+    "hacktober",
+    "beginner",
+    "practice",
+    "good-first",
+    "learn-git",
+    "git-practice",
+    "contribute-to-this",
+    "dev-wall",
+    "workbook",
+    "gssoc",
+    "ecsoc",
+    "swoc",
+    "open-source-practice",
+    "100-days",
+    "30-days",
+    "awesome-list"
+  ],
+  "exclude_orgs": [],
+  "exclude_repos": [],
+  "include_repos": []
+}
