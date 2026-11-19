@@ -204,6 +204,11 @@ export async function runInline(db, type, params = {}, { echo = true } = {}) {
 
 /** Call once on boot: marks interrupted app jobs as failed and resumes queued ones. */
 export async function startRunner(db) {
+  // a job that was being cancelled when the process went down is cancelled, not "interrupted": the scheduler must not start it again
+  await collections(db).jobs.updateMany(
+    { runner: 'app', status: 'running', cancelRequested: true },
+    { $set: { status: 'cancelled', error: null, finishedAt: new Date() } },
+  );
   await collections(db).jobs.updateMany(
     { runner: 'app', status: 'running' },
     { $set: { status: 'error', error: 'interrupted', finishedAt: new Date() } },

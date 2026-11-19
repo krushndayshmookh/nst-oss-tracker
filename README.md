@@ -31,7 +31,7 @@ All configuration is by environment variable. `.env.example` lists every variabl
 | `GITHUB_TOKEN` | unset | needed by sync, backfill and "add student" validation. Public read access is enough |
 | `GITHUB_API_URL` | `https://api.github.com` | optional API base (GraphQL at `<base>/graphql`); for GitHub Enterprise or a local fake server in tests |
 | `NODE_ENV` | `development` | `production` makes the admin cookie `Secure` |
-| `SYNC_CONCURRENCY` | `6` | students fetched in parallel |
+| `SYNC_CONCURRENCY` | `6` | students fetched in parallel by `scripts/sync.js` / `scripts/backfill.js`, and the first value of the scheduled fetch's own setting (afterwards that one is changed in Admin, Jobs, "Scheduled fetch", Settings) |
 | `TRUST_PROXY` | `1` | number of reverse proxies in front of the app |
 | `CLIENT_IP_HEADER` | unset | header with the visitor's address behind a CDN (`CF-Connecting-IP` on the cluster). Used as the key of the login and request limits; only believed when the TCP peer is a private address |
 | `TZ_NAME` | `Asia/Kolkata` | time zone of every date range, chart bucket, the academic year and the nightly fetch time |
@@ -80,9 +80,29 @@ node scripts/import_legacy.js [--data <dir>] [--fetched-at <ISO date>]
 
 The app starts the nightly fetch itself (02:30 IST by default). It is managed from Admin, Jobs, "Scheduled fetch":
 time of day, optional weekly full refresh, pause (with an optional end date) and resume, fetch now, full refresh,
-cancel the running fetch, and the results of the last 14 runs. The state lives in MongoDB (`settings` document
-`schedule`), so restarts are safe: a run missed while the app was down is caught up once, a run cut off by a restart
-is started again once. `scripts/sync.js` remains for manual runs from a terminal:
+cancel the running fetch, and the results of the last 14 runs. `scripts/sync.js` remains for manual runs from a
+terminal (below). How the scheduler behaves:
+
+- It looks at the clock every 30 seconds, so a run starts up to 30 seconds after the set time. The time is in
+  `TZ_NAME` (IST). One run per night; if another fetch is still queued or running at that moment, the nightly run
+  waits for it and starts right after.
+- The state lives in MongoDB (`settings` document `schedule`), not in the pod, so a restart loses nothing:
+  - The app was down at the scheduled time (however many nights): one catch-up run starts when it boots.
+  - The pod restarted in the middle of a fetch (deploy, node drain, crash): on boot that job is marked
+    `error: interrupted`, and the scheduler starts it again once (`trigger: recovery`) with the same selection
+    (full or incremental, campus, batch, users). Students the cut-off run had already finished are skipped, and
+    everything it saved is kept. If the recovery run is cut off as well, nothing more starts by itself; the next
+    nightly run picks up from each student's own last fetch time.
+  - Neither happens while the schedule is paused or switched off.
+- Pause stops the nightly run only; "Fetch now" still works. Pausing for days loses nothing, because each
+  student's fetch window starts at that student's last successful fetch. On Resume (or when the pause end date
+  passes) a nightly run that was missed meanwhile starts once, within 30 seconds.
+- Cancel stops the running fetch between two students (within a few seconds, also when it is waiting for GitHub's
+  rate limit). What was fetched until then stays and is counted; the run is listed as `cancelled`.
+- Parallelism is the "Students fetched in parallel" setting of the schedule (1 to 16), used by scheduled runs and by
+  "Fetch now" / "Full refresh".
+- "Data updated ..." on the public pages is the finish time of the last run that ended `done`; a cancelled or
+  failed run does not move it. While paused the footer adds "Updates are paused".
 
 ```sh
 node scripts/sync.js [--users a,b] [--full] [--limit N] [--campus C] [--batch YYYY] [--concurrency N]
@@ -275,7 +295,9 @@ GitHub id (about 2,600 extra REST requests, once).
 
 Build and push with a new tag, change `newTag` in `k8s/kustomization.yaml`, `kubectl apply -k k8s/`.
 The Deployment uses strategy Recreate (one replica, in-process job runner), so there are a few seconds of
-downtime. A job that was running inside the app is marked `interrupted`; queued jobs resume after the restart.
+downtime. A job that was running inside the app is marked `interrupted`; queued jobs resume after the restart, and
+a fetch that was cut off is started again once by the scheduler (see "Daily fetch"). To avoid that, release when no
+fetch is running, or press "Cancel running fetch" first.
 Roll back with `kubectl -n oss-status rollout undo deploy/oss-status` (and set the tag back in the file).
 
 ### Operations

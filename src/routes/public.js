@@ -533,7 +533,14 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
       for await (const doc of rows) {
         buf += csvLine(toRow(doc));
         if (buf.length > 64 * 1024) {
-          if (!res.write(buf)) await new Promise((resolve) => { res.once('drain', resolve); res.once('close', resolve); });
+          if (!res.write(buf)) {
+            // wait for the socket to drain (or to go away); both listeners are removed again, a long export waits many times
+            await new Promise((resolve) => {
+              const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
+              res.once('drain', done);
+              res.once('close', done);
+            });
+          }
           buf = '';
           if (res.destroyed) break;
         }

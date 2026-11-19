@@ -159,6 +159,9 @@ export function resolveRange({ from = '', to = '', range = '' } = {}, ay, now = 
     if (from && !isYmd(from)) throw new RangeError400('invalid from: expected a date (YYYY-MM-DD)');
     if (to && !isYmd(to)) throw new RangeError400('invalid to: expected a date (YYYY-MM-DD)');
     if (from && to && from > to) throw new RangeError400('invalid range: from is after to');
+    for (const [name, v] of [['from', from], ['to', to]]) {
+      if (v && (v < '1970-01-01' || v > '2199-12-31')) throw new RangeError400(`invalid ${name}: expected a date between 1970-01-01 and 2199-12-31`);
+    }
     preset = list.find((p) => p.from === from && p.to === to) || null;
   } else {
     preset = list.find((p) => p.key === (range || 'ay'));

@@ -49,6 +49,7 @@ function parseCampus(v, { required = false } = {}) {
 
 function parseBatch(v) {
   if (v === null || v === undefined || v === '') return null;
+  if (typeof v !== 'number' && typeof v !== 'string') throw badRequest('invalid batch: expected a year from 2015 to 2035, or null');
   const n = typeof v === 'number' ? v : (/^\d{4}$/.test(String(v).trim()) ? Number(String(v).trim()) : NaN);
   if (!Number.isInteger(n) || n < 2015 || n > 2035) throw badRequest('invalid batch: expected a year from 2015 to 2035, or null');
   return n;
@@ -132,7 +133,7 @@ export function adminRouter({ db, config, auth, github = null }) {
       const bad = keys.find((k) => k !== 'any' && !MISSING_KEYS.includes(k));
       if (bad) throw badRequest(`invalid missing: expected any or a comma list of ${MISSING_KEYS.join(', ')}`);
       const wanted = keys.includes('any') ? MISSING_KEYS : keys;
-      parts.push({ $or: wanted.map((k) => MISSING_FILTERS[k]) });
+      if (wanted.length) parts.push({ $or: wanted.map((k) => MISSING_FILTERS[k]) });
     }
     return allOf(...parts);
   }
@@ -246,7 +247,8 @@ export function adminRouter({ db, config, auth, github = null }) {
 
     rows.forEach((raw, i) => {
       const row = raw && typeof raw === 'object' ? raw : {};
-      const get = (...keys) => { for (const k of keys) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return String(row[k]).trim(); return ''; };
+      // the CSV export puts ' in front of a value that a spreadsheet would run as a formula: taken off again here
+      const get = (...keys) => { for (const k of keys) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return String(row[k]).trim().replace(/^'(?=[=+\-@])/, ''); return ''; };
       const typed = get('github_username', 'username', 'github_profile');
       const result = { row: i + 1, username: typed, status: 'invalid', error: null };
       results.push(result);

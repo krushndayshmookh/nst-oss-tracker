@@ -184,16 +184,20 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
 
   // Zero-filled axes. A range that ends in the future is filled up to today only; an open end uses the data.
   const today = zoned(now, tz).ymd;
-  const lo = range.from || first;
+  let lo = range.from || first;
   let hi = range.to || (last && last > today ? last : today);
   if (range.to && range.to > today) hi = last && last > today ? last : today;
+  // A range too long for the day-by-day list starts its month / week axes at the first event instead of `from`:
+  // "from=1900-01-01" must not fill the axes with a century of zeros (and run into their caps before the data begins).
+  const tooLong = Boolean(lo && hi && daysBetween(lo, hi) + 1 > MAX_DAYS);
+  if (tooLong && (!first || first > lo)) lo = first || hi;
   const out = { totals, byMonth: [], byWeek: [], byWeekday: [], byHour: [], heatmap: [], byCampusMonth: [], busiest: { day: null, week: null, month: null } };
   if (lo && hi && lo <= hi) {
     for (const m of monthsBetween(lo.slice(0, 7), hi.slice(0, 7))) {
       out.byMonth.push({ month: m, ...(months.get(m) || zero()), activeStudents: monthAuthors.get(m)?.size ?? 0 });
     }
     const days = daysBetween(lo, hi) + 1;
-    if (days <= MAX_DAYS) {
+    if (!tooLong) {
       out.byDate = [];
       for (let i = 0; i < days; i++) { const d = addDays(lo, i); out.byDate.push({ date: d, ...(dates.get(d) || zero()) }); }
     } else out.truncated = true;
@@ -225,8 +229,15 @@ export async function monthlySeries(db, { match = {}, range, tz = TZ, now = new 
     lo = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
   }
   if (lo > hi) hi = lo;
-  let months = monthsBetween(lo.slice(0, 7), hi.slice(0, 7));
-  if (months.length > 120) months = months.slice(-120);
+  // at most the last 120 months of the range (computed from the end: monthsBetween stops counting after 100 years)
+  const [hy, hm] = hi.slice(0, 7).split('-').map(Number);
+  const [ly, lm] = lo.slice(0, 7).split('-').map(Number);
+  let first = lo.slice(0, 7);
+  if ((hy - ly) * 12 + (hm - lm) + 1 > 120) {
+    const d = new Date(Date.UTC(hy, hm - 1 - 119, 1));
+    first = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  }
+  const months = monthsBetween(first, hi.slice(0, 7));
   const month = (field) => ({ $dateToString: { format: '%Y-%m', date: field, timezone: tz } });
   const cond = inRange(range);
   const [opened, merged] = await Promise.all([
