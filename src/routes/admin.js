@@ -509,6 +509,7 @@ export function adminRouter({ db, config, auth, github = null }) {
     res.json({ job: jobOut(job, true) });
   });
 
+  let triggerLock = Promise.resolve();
   r.post('/jobs/sync', async (req, res) => {
     const params = { trigger: 'manual' };
     if (req.body.users !== undefined && req.body.users !== null) {
@@ -519,12 +520,15 @@ export function adminRouter({ db, config, auth, github = null }) {
     params.full = req.body.full === true;
     if (req.body.campus !== undefined && req.body.campus !== null && req.body.campus !== '') params.campus = parseCampus(req.body.campus);
     if (req.body.batch !== undefined && req.body.batch !== null && req.body.batch !== '') params.batch = parseBatch(req.body.batch);
-    // one sync at a time: a second one would fetch the same students again
-    const running = await activeSync(db);
-    if (running) throw new ApiError(409, 'conflict', `a sync is already ${running.status} (job ${running._id})`, { jobId: running._id });
-    const schedule = await ensureSchedule(db, { tz, concurrency: config.syncConcurrency });
-    params.concurrency = schedule.concurrency;
-    const job = await enqueue(db, 'sync', params);
+    // one sync at a time: a second one would fetch the same students again. The check and the enqueue run one request
+    // at a time (replicas: 1), so two "Fetch now" clicks that arrive together cannot both pass.
+    const job = await (triggerLock = triggerLock.catch(() => {}).then(async () => {
+      const running = await activeSync(db);
+      if (running) throw new ApiError(409, 'conflict', `a sync is already ${running.status} (job ${running._id})`, { jobId: running._id });
+      const schedule = await ensureSchedule(db, { tz, concurrency: config.syncConcurrency });
+      params.concurrency = schedule.concurrency;
+      return enqueue(db, 'sync', params);
+    }));
     res.status(202).json({ job: { id: job._id } });
   });
 
@@ -545,6 +549,11 @@ export function adminRouter({ db, config, auth, github = null }) {
       activeSync(db),
       c.jobs.find({ type: 'sync' }, { projection: { log: 0 } }).sort({ createdAt: -1, _id: 1 }).limit(14).toArray(),
     ]);
+    // the result of the last scheduled run, as it is now (the scheduler copies it only every 30 seconds)
+    if (schedule.lastRunJobId) {
+      const last = await c.jobs.findOne({ _id: schedule.lastRunJobId }, { projection: { status: 1 } });
+      if (last) schedule.lastRunStatus = last.status;
+    }
     return { schedule: scheduleOut(schedule, now), tz, running: running ? jobOut(running) : null, runs: runs.map((j) => jobOut(j)) };
   }
 

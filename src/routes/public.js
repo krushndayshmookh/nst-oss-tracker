@@ -47,6 +47,8 @@ function addStudent(row, st) {
 }
 
 const collator = new Intl.Collator('en', { sensitivity: 'accent' });
+/** Mongo sort spec: the chosen field, then a tie-breaker (skipped when it is the chosen field itself, or it would overwrite the direction), then _id. */
+const sortSpec = (field, dir, tie) => ({ [field]: dir, ...(tie !== field && { [tie]: -1 }), _id: 1 });
 const time = (d) => (d ? new Date(d).getTime() : 0);
 
 export function publicRouter({ db, auth, config = {}, cache = null }) {
@@ -318,7 +320,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     const f = studentFilter(req.query);
     if (flag(req.query, 'hasOs')) f['stats.osPrs'] = { $gt: 0 };
     const [rows, total] = await Promise.all([
-      c.students.find(f, { projection: PUBLIC_STUDENT }).collation(COLLATION).sort({ [STUDENT_SORT[sort]]: dir, 'stats.osPrs': -1, _id: 1 })
+      c.students.find(f, { projection: PUBLIC_STUDENT }).collation(COLLATION).sort(sortSpec(STUDENT_SORT[sort], dir, 'stats.osPrs'))
         .skip(skip).limit(limit).maxTimeMS(T).toArray(),
       c.students.countDocuments(f, { maxTimeMS: T }),
     ]);
@@ -404,7 +406,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     }
     f['stats.prs'] = { $gt: 0 };
     const [rows, total] = await Promise.all([
-      c.repos.find(f).sort({ [REPO_SORT[sort]]: dir, 'stats.prs': -1, _id: 1 }).skip(skip).limit(limit).maxTimeMS(T).toArray(),
+      c.repos.find(f).sort(sortSpec(REPO_SORT[sort], dir, 'stats.prs')).skip(skip).limit(limit).maxTimeMS(T).toArray(),
       c.repos.countDocuments(f, { maxTimeMS: T }),
     ]);
     res.json({ range: rangeOut(range), items: rows.map((d) => repoOut(d, { admin })), total, page, limit });
@@ -481,7 +483,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     else if (category !== 'all') f[`stats.byCategory.${category}`] = { $gt: 0 };
     if (q) f.login = contains(q);
     const [rows, total] = await Promise.all([
-      c.owners.find(f).sort({ [ORG_SORT[sort]]: dir, 'stats.prs': -1, _id: 1 }).skip(skip).limit(limit).maxTimeMS(T).toArray(),
+      c.owners.find(f).sort(sortSpec(ORG_SORT[sort], dir, 'stats.prs')).skip(skip).limit(limit).maxTimeMS(T).toArray(),
       c.owners.countDocuments(f, { maxTimeMS: T }),
     ]);
     res.json({ range: rangeOut(range), items: rows.map((d) => orgOut(d, { admin })), total, page, limit });
@@ -568,7 +570,8 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     const range = await rangeOf(req);
     const f = await prFilter(db, req.query, { range });
     const now = new Date();
-    const cursor = c.prs.find(f, { projection: PR_EXPORT }).sort({ createdAt: -1, _id: 1 }).maxTimeMS(60000);
+    // the sort is not covered by an index: without allowDiskUse it fails once the selection outgrows Mongo's 100 MB sort limit
+    const cursor = c.prs.find(f, { projection: PR_EXPORT, batchSize: 5000 }).sort({ createdAt: -1, _id: 1 }).allowDiskUse(true).maxTimeMS(60000);
     // author names are looked up per batch of rows instead of loading every student for every export
     const names = new Map();
     async function* rows() {

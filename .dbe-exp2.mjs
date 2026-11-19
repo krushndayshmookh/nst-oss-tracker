@@ -1,0 +1,15 @@
+import { MongoClient } from 'mongodb';
+import { csvLine } from './src/csv.js';
+const client = new MongoClient('mongodb://127.0.0.1:27811'); await client.connect();
+const prs = client.db('dbe').collection('prs');
+const PR_EXPORT = { url: 1, author: 1, authorLogin: 1, campus: 1, batch: 1, repo: 1, owner: 1, ownerType: 1, stars: 1, title: 1, state: 1, isDraft: 1, createdAt: 1, mergedAt: 1, closedAt: 1, additions: 1, deletions: 1, changedFiles: 1, category: 1, tier: 1, reason: 1 };
+const time = async (name, fn) => { const ts = []; let r; for (let i = 0; i < 3; i++) { const t = performance.now(); r = await fn(); ts.push(Math.round(performance.now() - t)); } console.log(name, ts.join('/'), r); };
+await time('find sort toArray', async () => (await prs.find({ active: true }, { projection: PR_EXPORT }).sort({ createdAt: -1, _id: 1 }).toArray()).length);
+await time('find sort batch5000', async () => (await prs.find({ active: true }, { projection: PR_EXPORT, batchSize: 5000 }).sort({ createdAt: -1, _id: 1 }).toArray()).length);
+await time('find nosort', async () => (await prs.find({ active: true }, { projection: PR_EXPORT, batchSize: 5000 }).toArray()).length);
+await time('for await', async () => { let n = 0; for await (const d of prs.find({ active: true }, { projection: PR_EXPORT, batchSize: 5000 }).sort({ createdAt: -1, _id: 1 })) n++; return n; });
+const docs = await prs.find({ active: true }, { projection: PR_EXPORT }).toArray();
+await time('csvLine only', async () => { let b = 0; for (const d of docs) b += csvLine([d.url, d.author, '', d.campus, d.batch, '', d.repo, d.owner, d.ownerType, d.stars, d.title, d.state, d.isDraft, d.createdAt?.toISOString(), d.mergedAt?.toISOString(), d.closedAt?.toISOString(), d.additions, d.deletions, d.changedFiles, d.category, d.tier, d.reason]).length; return b; });
+const ex = await prs.find({ active: true }, { projection: PR_EXPORT }).sort({ createdAt: -1, _id: 1 }).explain('executionStats');
+console.log(JSON.stringify(ex.executionStats.executionStages).slice(0, 300), ex.executionStats.executionTimeMillis);
+await client.close();

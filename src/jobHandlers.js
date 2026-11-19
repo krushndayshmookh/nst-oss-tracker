@@ -14,6 +14,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const OVERLAP_DAYS = 2;          // incremental window starts this long before lastSyncedAt
 export const FIRST_WINDOW_DAYS = 3;     // ... or this long before now when lastSyncedAt is missing
 export const LOGIN_CHECK_DAYS = 7;      // rename check at most once per student in this period
+const SLEEP_SLICE_MS = 2000;
 export const MAX_CONSECUTIVE_FAILURES = 25; // GitHub is down or the token is bad: stop instead of failing everyone slowly
 
 const lc = (s) => String(s ?? '').toLowerCase();
@@ -31,13 +32,28 @@ function makeEnv(db, ctx, opts = {}) {
   const now = opts.now ?? (() => new Date());
   const gh = { now, log: (line) => ctx?.log?.(line) };
   for (const k of ['fetch', 'token', 'sleep']) if (opts[k] !== undefined) gh[k] = opts[k];
-  return {
+  const env = {
     db, c: collections(db), github, now, gh,
     log: (line) => ctx?.log?.(line),
     progress: (done, total) => ctx?.progress?.(done, total),
     ctx: ctx ?? {},
     tokenSet: Boolean(opts.token ?? process.env.GITHUB_TOKEN),
   };
+  env.isCancelled = cancelChecker(env);
+  // The GitHub client waits through gh.sleep: up to an hour when the rate limit is used up. Such a wait is cut short
+  // when the job is cancelled, so "Cancel" never hangs behind it (the student in flight then finishes or fails fast).
+  if (gh.sleep === undefined) {
+    gh.sleep = async (ms) => {
+      const end = Date.now() + ms;
+      for (;;) {
+        const left = end - Date.now();
+        if (left <= 0) return;
+        if (left > SLEEP_SLICE_MS && await env.isCancelled()) return;
+        await new Promise((r) => setTimeout(r, Math.min(left, SLEEP_SLICE_MS)));
+      }
+    };
+  }
+  return env;
 }
 
 /** Cooperative cancel (addendum C): the runner may expose ctx.isCancelled(), otherwise jobs.cancelRequested is polled. */
@@ -246,6 +262,7 @@ async function processStudent(env, student, { full }) {
       return r;
     }
 
+    let unverified = false; // an empty full result whose account could not be looked up
     if (full && (res.nodes || []).length === 0) {
       // a search for a login that does not exist silently returns 0: check that the account is there
       let user;
@@ -254,6 +271,7 @@ async function processStudent(env, student, { full }) {
         user = await github.getUser(student.username, env.gh);
       } catch (e) {
         checked = false;
+        unverified = true;
         env.log(`${student._id}: could not verify the account: ${e?.message || e}`);
       }
       if (checked && !user) {
@@ -296,7 +314,7 @@ async function processStudent(env, student, { full }) {
     const set = { lastSyncedAt: startedAt };
     if (full || student.backfill?.status !== 'done') set.backfill = { status: 'done', at: env.now() };
     const update = { $set: set };
-    if (full || (res.nodes || []).length) update.$unset = { unresolvedSince: '' }; // an empty incremental result proves nothing
+    if ((full && !unverified) || (res.nodes || []).length) update.$unset = { unresolvedSince: '' }; // an empty incremental result proves nothing
     await c.students.updateOne({ _id: student._id }, update);
     return r;
   }
@@ -306,7 +324,7 @@ async function processStudent(env, student, { full }) {
 /** Runs `tasks` ([{student, full}]) with a worker pool; fills and returns the summary. */
 async function runAll(env, tasks, summary, { concurrency }) {
   const total = tasks.length;
-  const isCancelled = cancelChecker(env);
+  const { isCancelled } = env;
   let next = 0;
   let done = 0;
   let consecutive = 0;
@@ -383,7 +401,7 @@ async function run(db, ctx, opts, select, params) {
   const summary = emptySummary();
   if (!env.tokenSet && !opts.github) throw new Error('GITHUB_TOKEN is not set: cannot fetch from GitHub');
   const tasks = await select(env, summary);
-  summary.students = tasks.length + summary.skipped + (summary.unknown?.length ?? 0);
+  summary.students = tasks.length + summary.skipped + (summary.alreadyDone ?? 0) + (summary.unknown?.length ?? 0);
   env.log(`${tasks.length} students to fetch (${tasks.filter((t) => t.full).length} full history)${summary.skipped ? `, ${summary.skipped} skipped (account not found earlier)` : ''}`);
   try {
     await runAll(env, tasks, summary, { concurrency: concurrencyOf(params, opts) });
@@ -453,9 +471,13 @@ export async function sync(db, params = {}, ctx = {}, opts = {}) {
     // least recently synced first, so a limited or interrupted run rotates through everyone
     const key = (s) => (s.lastSyncedAt ? new Date(s.lastSyncedAt).getTime() : 0);
     students.sort((a, b) => key(a) - key(b) || (a._id < b._id ? -1 : 1));
+    // a recovery run (addendum C) continues a run that a restart cut off: whoever that run already finished is left alone
+    const resumeSince = params.resumeSince ? new Date(params.resumeSince) : null;
+    const resumeAt = resumeSince && !Number.isNaN(resumeSince.getTime()) ? resumeSince.getTime() : null;
     const tasks = [];
     for (const s of students) {
       const st = s.backfill?.status;
+      if (resumeAt !== null && st === 'done' && key(s) >= resumeAt) { summary.alreadyDone = (summary.alreadyDone || 0) + 1; continue; }
       if (st === 'error' && s.backfill?.error === 'not_found' && !users) { summary.skipped++; continue; }
       tasks.push({ student: s, full: Boolean(params.full) || st !== 'done' });
     }

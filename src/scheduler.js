@@ -7,7 +7,6 @@ import { activeSync, enqueue } from './jobs.js';
 
 export const TICK_MS = 30000;
 const HOUR_MS = 60 * 60 * 1000;
-const FINAL = ['done', 'error', 'cancelled'];
 
 export function defaultSchedule(concurrency = 6) {
   return { enabled: true, paused: false, pausedUntil: null, pauseNote: '', dailyAt: '02:30', fullRefreshDay: null, concurrency,
@@ -123,29 +122,55 @@ export async function tick(db, { now = new Date(), tz = TZ, enqueueJob = enqueue
   if (!s.enabled) return { fired: null, why: 'disabled' };
   if (s.paused) return { fired: null, why: 'paused' };
 
-  const start = async (trigger, claim) => {
+  const start = async (trigger, claim, extra = {}) => {
     // the claim makes a slot fire once, also if two ticks overlap
     const claimed = await settings.updateOne({ _id: 'schedule', ...claim.filter }, { $set: { ...claim.set, lastRunAt: now } });
     if (!claimed.modifiedCount) return { fired: null, why: 'already claimed' };
-    const params = { trigger, full: s.fullRefreshDay !== null && s.fullRefreshDay === zoned(now, tz).dow % 7, concurrency: s.concurrency };
+    const weekly = s.fullRefreshDay !== null && s.fullRefreshDay !== undefined && s.fullRefreshDay === zoned(now, tz).dow % 7;
+    const params = { trigger, full: weekly, concurrency: s.concurrency, ...extra };
     const job = await enqueueJob(db, 'sync', params);
     await settings.updateOne({ _id: 'schedule' }, { $set: { lastRunJobId: job._id, lastRunStatus: job.status || 'queued' } });
-    return { fired: job._id, why: trigger };
+    return { fired: job._id, why: trigger, job };
   };
+  const out = ({ fired, why }) => ({ fired, why });
 
   const busy = await activeSync(db);
-  // a scheduled run that a restart cut off is started again, once
-  if (!busy && last?.status === 'error' && last.error === 'interrupted' && s.recoveredJobId !== s.lastRunJobId) {
-    return start('recovery', { filter: { lastRunJobId: s.lastRunJobId }, set: { recoveredJobId: s.lastRunJobId } });
+  // A sync that a restart cut off (startRunner marked it `interrupted`) is started again, once: only when it is the
+  // newest sync job, and never for a run that was itself a recovery (a pod that keeps dying must not fetch in a loop).
+  let cut = null;
+  if (!busy) {
+    const newest = await jobs.find({ type: 'sync' }, { projection: { log: 0 } }).sort({ createdAt: -1, _id: 1 }).limit(1).next();
+    if (newest && newest.runner === 'app' && newest.status === 'error' && newest.error === 'interrupted' && !newest.recoveredBy
+      && newest.params?.trigger !== 'recovery') cut = newest;
+  }
+  const claimCut = async () => (await jobs.updateOne({ _id: cut._id, recoveredBy: { $exists: false } }, { $set: { recoveredBy: 'pending' } })).modifiedCount === 1;
+  const due = s.nextRunAt instanceof Date && now >= s.nextRunAt;
+  if (cut && !due) {
+    if (!(await claimCut())) return { fired: null, why: 'already claimed' };
+    // same selection as the run that was cut off; students it had already finished are not fetched again
+    const extra = { recovers: cut._id };
+    for (const k of ['full', 'users', 'campus', 'batch', 'limit']) if (cut.params?.[k] !== undefined) extra[k] = cut.params[k];
+    if (cut.startedAt instanceof Date) extra.resumeSince = cut.startedAt;
+    const r = await start('recovery', { filter: {}, set: { recoveredJobId: cut._id } }, extra);
+    await jobs.updateOne({ _id: cut._id }, r.fired ? { $set: { recoveredBy: r.fired } } : { $unset: { recoveredBy: '' } });
+    return out(r);
   }
   if (!(s.nextRunAt instanceof Date)) {
     await settings.updateOne({ _id: 'schedule' }, { $set: { nextRunAt: nextRunAfter(now, s.dailyAt, tz) } });
     return { fired: null, why: 'scheduled' };
   }
-  if (now < s.nextRunAt) return { fired: null, why: 'not due' };
+  if (!due) return { fired: null, why: 'not due' };
   if (busy) return { fired: null, why: 'a sync is already queued or running' };
   const late = now.getTime() - s.nextRunAt.getTime() > HOUR_MS;
-  return start(late ? 'catchup' : 'schedule', { filter: { nextRunAt: s.nextRunAt }, set: { nextRunAt: nextRunAfter(now, s.dailyAt, tz) } });
+  // a nightly run that is due anyway also stands in for a run that was cut off (it covers every student)
+  const extra = {};
+  if (cut && (await claimCut())) {
+    extra.recovers = cut._id;
+    if (cut.params?.full === true && !cut.params.users && !cut.params.campus && cut.params.batch === undefined) extra.full = true;
+  }
+  const r = await start(late ? 'catchup' : 'schedule', { filter: { nextRunAt: s.nextRunAt }, set: { nextRunAt: nextRunAfter(now, s.dailyAt, tz) } }, extra);
+  if (extra.recovers) await jobs.updateOne({ _id: cut._id }, r.fired ? { $set: { recoveredBy: r.fired } } : { $unset: { recoveredBy: '' } });
+  return out(r);
 }
 
 /** Starts ticking (first tick right away: that is the catch-up on boot). -> { stop() } */
