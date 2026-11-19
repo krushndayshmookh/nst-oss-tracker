@@ -141,7 +141,7 @@ async function execute(db, job, { echo = false } = {}) {
   await chain;
   set.finishedAt = new Date();
   await jobs.updateOne({ _id: job._id }, { $set: set });
-  invalidateAll(); // cached public responses are stale now
+  if (job.type !== 'scores') invalidateAll(); // cached public responses are stale now (the private scores change nothing public)
   if (CHANGES_PR_DATA.has(job.type) && set.status !== 'error') {
     try {
       const { afterDataChange } = await import('./scores.js');

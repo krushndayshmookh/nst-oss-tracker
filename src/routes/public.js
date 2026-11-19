@@ -232,8 +232,8 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
 
   // One comparison per range feeds the list and every campus page; it is small, so a handful are kept.
   const comparisons = createCache({ ttlMs: groupTtl, max: 6 });
-  const comparison = (range, now) => comparisons.memo(`c:${rangeKey(range)}`, async () =>
-    campusComparison(db, { range, ranged: range.all ? null : await grouped('author', range), now, tz }));
+  const comparison = (range, now) => comparisons.memo(`c:${rangeKey(range)}`, () =>
+    campusComparison(db, { range, ranged: range.all ? null : grouped('author', range), now, tz }));
   const top = (list, n) => list.slice(0, n);
 
   r.get('/campuses', async (req, res) => {

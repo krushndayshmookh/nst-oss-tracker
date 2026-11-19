@@ -27,6 +27,7 @@ All configuration is by environment variable. `.env.example` lists every variabl
 | `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
 | `MONGODB_DB` | `oss_status` | database name |
 | `ADMIN_PASSWORD` | unset | admin password. While unset, the admin API answers 503. In production it must be at least 16 characters and not a placeholder, or the admin area stays closed (503) |
+| `OWNER_PASSWORD` | unset | second password of the private page "Krushn's dashboard" (see below). At least 16 characters, not a placeholder, different from `ADMIN_PASSWORD`; while unset or weak the page answers 503 |
 | `SESSION_SECRET` | random per process | signs the admin cookie (together with the password, so changing the password signs everyone out). In production: required, at least 32 characters |
 | `GITHUB_TOKEN` | unset | needed by sync, backfill and "add student" validation. Public read access is enough |
 | `GITHUB_API_URL` | `https://api.github.com` | optional API base (GraphQL at `<base>/graphql`); for GitHub Enterprise or a local fake server in tests |
@@ -173,6 +174,33 @@ The note typed with a decision is private: the public site shows that an admin d
 Overrides on PRs, repos and owners apply immediately. "Valuable contribution" means category `open_source`;
 the headline numbers are merged open-source PRs and students with at least one of them. The About page of the
 public site explains the classification with the current rules.
+
+## Private page: "Krushn's dashboard" (program readiness)
+
+A link in the admin top bar, visible to every admin, opens a page that only its owner can read: it **always asks for a
+second password** (`OWNER_PASSWORD`), which unlocks it for 2 hours in that browser ("Lock" closes it at once). Without
+that password an admin session gets `401` from every `/api/owner/*` route; nothing of it appears in the public site,
+the admin pages, the exports or the job list.
+
+What it shows: for each active student and each program (GSoC, Outreachy, LFX Mentorship, Processing Foundation,
+Summer of Bitcoin, MLH Fellowship, plus "other major projects" as a general signal) a **readiness score** from 0 to 100
+with a band (Strong / Possible / Early / No signal), the reasons behind it, blockers, evidence PRs and a suggested next
+step. It is a transparent heuristic over public pull requests (depth in one organisation, substance, sustained weeks,
+recency, maintainer interaction, breadth, track record), **not a probability of selection**, and it says so. Weights,
+band thresholds, contribution windows and organisation lists are editable on the page (Settings). It never infers
+eligibility, gender or any other protected attribute; eligibility notes are shown as text to check with the student.
+
+| Piece | Where |
+| --- | --- |
+| Scores (private collection `program_scores`) | recomputed by a `scores` job after every fetch, backfill, reclassify or import, after every settings change, and when the page finds them older than the data |
+| Program settings | `settings` document `programs`, seeded on first boot from `config/programs.seed.json` and never overwritten afterwards |
+| GSoC organisation list | `scripts/fetch_program_orgs.js --year 2026 --apply` fetches the list of that year from the GSoC archive, maps each organisation to its GitHub login(s) (hand-checked aliases in `config/program-org-aliases.json`, then github.com links in the organisation's own entry, then its name against organisations already in the data) and replaces the program's list. `--file <saved.json>` maps a saved list, `--write-seed` also rewrites the seed. Organisations it cannot map (many do not work on GitHub) are listed and can be mapped by hand on the page |
+| Other programs' organisation lists | **starter lists** in the seed (marked as such on the page): a small hand-picked set, not the current roster. Review them each round |
+| Notes and flags (Shortlist / Watch / Not applying) | private collection `owner_notes` |
+| Past outcomes (calibration) | optional upload on the page: CSV `username,program,year,org,selected`. With outcomes the page also shows, per band, how many past applicants were selected. `node scripts/convert_gsoc_mentees.js GSoC_Mentees.xlsx --year 2025 > outcomes.csv` converts NST's tracking workbook ("Proposals" tab). Keep such files out of the repository: they are stored only in the private collection `program_outcomes` |
+
+Setting it up: add `OWNER_PASSWORD` to the Secret (`k8s/secret.example.yaml` shows how) and restart the app. To change
+who can open the page, change that password. A database backup contains the private collections; treat it accordingly.
 
 ## Deploy runbook (Kubernetes)
 

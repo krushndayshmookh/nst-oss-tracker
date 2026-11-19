@@ -417,7 +417,7 @@ export async function recomputeScores(db, { now = new Date(), tz = TZ, log = () 
   await db.collection('settings').updateOne({ _id: 'programScoresState' },
     { $set: { computedAt: now, finishedAt: new Date(), settingsUpdatedAt: cfg.updatedAt ?? null, summary, calibration } }, { upsert: true });
   progress(students.length, students.length);
-  log(`readiness scores recomputed for ${students.length} students`);
+  log(`${students.length} students processed`);
   return summary;
 }
 

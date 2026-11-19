@@ -143,8 +143,9 @@ const byWork = (a, b) => b.osMerged - a.osMerged || b.osPrs - a.osPrs || (a.id <
 
 /**
  * Everything GET /api/campuses and GET /api/campuses/:campus answer with, for one range.
- * `ranged` is the Map of groupStats(by 'author') rows of the range, or null for all time (then the precomputed
- * `stats` of the students are used). The result is plain data and safe to cache.
+ * `ranged` is the Map of groupStats(by 'author') rows of the range (or a promise of it: it is awaited together with
+ * the other queries), or null for all time (then the precomputed `stats` of the students are used).
+ * The result is plain data and safe to cache.
  */
 export async function campusComparison(db, { range, ranged = null, now = new Date(), tz = TZ }) {
   const c = collections(db);
@@ -152,8 +153,9 @@ export async function campusComparison(db, { range, ranged = null, now = new Dat
   const { opened, merged } = rangeFlags(range);
   const prevFlags = prev ? rangeFlags(prev) : null;
 
-  const [students, pairs, prevRows] = await Promise.all([
-    c.students.find({ active: true }, { projection: { campus: 1, batch: 1, ...(ranged ? {} : { stats: 1 }) } }).maxTimeMS(15000).toArray(),
+  const allTime = !ranged;
+  const [students, pairs, prevRows, perStudent] = await Promise.all([
+    c.students.find({ active: true }, { projection: { campus: 1, batch: 1, ...(allTime && { stats: 1 }) } }).maxTimeMS(15000).toArray(),
     // open-source work of the range per student × repo × tier: tier mix, top orgs / repos and shared orgs all come from
     // these few thousand rows, and through the student they are attributed to the same campus as every other number
     c.prs.aggregate([
@@ -166,7 +168,9 @@ export async function campusComparison(db, { range, ranged = null, now = new Dat
         osPrs: sumIf(and(OS, prevFlags.opened)), osMerged: sumIf(and(OS, prevFlags.merged)),
         osMajorMerged: sumIf(and(OS, prevFlags.merged, eq('$tier', 'major'))) } },
     ], AGG).toArray() : [],
+    ranged,
   ]);
+  ranged = perStudent;
 
   // --- students -> blocks
   const rows = new Map();
