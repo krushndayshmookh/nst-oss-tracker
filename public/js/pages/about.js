@@ -78,6 +78,16 @@ export default async function (el, ctx) {
         h('li', null, tierBadge('emerging'), ` fewer than ${n(tiers.established)} stars`)),
       h('p', null, 'Stars are a rough proxy for how established a project is, not a measure of the quality of a contribution. Admins correct the cases where the proxy is wrong.'),
 
+      h('h2', { id: 'campus-rates' }, 'Comparing campuses'),
+      h('p', null,
+        'The campuses differ a lot in size, so wherever campuses or years of study are set side by side the site shows rates: ',
+        h('strong', null, 'figures per 100 tracked students'), ' (a count divided by the number of tracked students in the group, times 100) and ',
+        h('strong', null, 'shares of the tracked students'), '. The denominator is the number of ', h('strong', null, 'tracked students'),
+        ': students of that campus and year whose GitHub username is known to this site. It is not the full strength of the batch, ',
+        'so a campus where fewer usernames have been collected has a smaller denominator than its enrolment. ',
+        'The number of students behind a rate is always shown beside it, and a group with fewer than 30 tracked students is marked “small cohort”, because one student moves its rate a lot. ',
+        h('a', { href: link('/campuses', {}, ctx) }, 'Compare the campuses'), '.'),
+
       hasRanges(meta) ? [
         h('h2', null, 'Date ranges'),
         h('p', null,

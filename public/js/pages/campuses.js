@@ -110,23 +110,22 @@ export default async function (el, ctx) {
   const month = campusMonthSeries(activity, { scale, metric: 'merged', unknown: showUnknown, noun: 'open-source PRs' });
   const monthCanvas = h('canvas');
   put(el,
-    h('div', { class: 'section-head' }, h('h2', null, 'Month by month and who takes part')),
-    h('div', { class: 'grid grid-2' },
-      card({ title: 'Merged open-source PRs by month', note: scaleToggle(ctx, 'month', { labels: { share: 'Share active' } }) },
-        month ? [
-          h('p', { class: 'chart-unit' }, month.unit),
-          h('div', { class: 'chart-box' }, monthCanvas),
-          h('p', { class: 'card-note' },
-            scale === 'share' ? 'A student is active in a month when they opened or merged an open-source pull request in it. ' : null,
-            'The number after a campus is its tracked students. ',
-            open ? 'The current month is incomplete. ' : null,
-            h('a', { href: link('/activity', {}, ctx) }, 'Full activity breakdown')),
-        ] : h('p', { class: 'muted' }, 'No monthly figures for this period.')),
-      card({ title: 'How far students get', note: scaleToggle(ctx, 'funnel', { labels: { per100: 'Share of students', share: 'Share of students' } }), flush: true, class: 'card-matrix' },
-        funnelMatrix(groups, { scale, ctx, below }),
-        h('p', { class: 'card-note card-note-pad' },
-          rateMode ? 'Each figure is a share of the campus’s tracked students, with the number of students beside it. ' : 'Number of students, with their share of the campus beside it. ',
-          'Each step is a subset of the one before. Bars are scaled within a column, so read down a column to compare campuses.'))));
+    h('div', { class: 'section-head' }, h('h2', null, 'How far students get'), scaleToggle(ctx, 'funnel', { two: ['Share of students', 'Counts'] })),
+    card({ flush: true },
+      funnelMatrix(groups, { scale, ctx, below }),
+      h('p', { class: 'card-note card-note-pad' },
+        rateMode ? 'Each figure is a share of the campus’s tracked students, with the number of students beside it. ' : 'Number of students, with their share of the campus beside it. ',
+        'Each step is a subset of the one before. Bars are scaled within a column, so read down a column to compare campuses.')),
+    h('div', { class: 'section-head' }, h('h2', null, 'Month by month'), scaleToggle(ctx, 'month', { labels: { share: 'Share active' } })),
+    card({ title: 'Merged open-source PRs by month', note: month ? month.unit : null },
+      month ? [
+        h('div', { class: 'chart-box' }, monthCanvas),
+        h('p', { class: 'card-note' },
+          scale === 'share' ? 'A student is active in a month when they opened or merged an open-source pull request in it. ' : null,
+          'The number after a campus is its tracked students. ',
+          open ? 'The current month is incomplete. ' : null,
+          h('a', { href: link('/activity', {}, ctx) }, 'Full activity breakdown')),
+      ] : h('p', { class: 'muted' }, 'No monthly figures for this period.')));
 
   // ── 3. year of study within each campus ──
   const ym = yearMetric(scale);
@@ -160,7 +159,7 @@ export default async function (el, ctx) {
   const order = q.order || (sort === 'campus' ? 'asc' : 'desc');
   put(el,
     h('div', { class: 'section-head' }, h('h2', null, 'Campus by year'),
-      h('div', { class: 'toolbar' }, scaleToggle(ctx, 'table', { labels: { per100: 'Rates', share: 'Rates', raw: 'Counts' } }))),
+      h('div', { class: 'toolbar' }, scaleToggle(ctx, 'table', { two: ['Rates', 'Counts'] }))),
     card({ flush: true },
       campusYearTable(data, { ctx, past, rateMode, sort, order, onSort: (s, o) => setQuery({ sort: s === CAMPUS_SORT_DEFAULT && o === 'desc' ? '' : s, order: s === CAMPUS_SORT_DEFAULT && o === 'desc' ? '' : o }) }),
       h('p', { class: 'card-note card-note-pad' },

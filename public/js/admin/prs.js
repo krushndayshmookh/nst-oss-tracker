@@ -32,7 +32,7 @@ function liveCell(live, p, render) {
   item.cells.push(() => {
     const active = document.activeElement;
     const name = active && holder.contains(active) ? active.getAttribute('name') : null;
-    holder.replaceChildren(render(p));
+    holder.replaceChildren(...h('div', null, render(p)).childNodes);
     const again = name ? holder.querySelector(`[name="${CSS.escape(name)}"]`) : null;
     if (again) again.focus({ preventScroll: true });
   });
@@ -95,7 +95,7 @@ export default async function (el, ctx) {
           },
           { key: 'category', label: 'Category', wrap: true, render: (p) => liveCell(live, p, prState) },
           { key: 'createdAt', label: 'Opened', sortable: true, num: true, render: (p) => fmt.date(p.createdAt) },
-          { key: 'decision', label: 'Decision', render: (p) => liveCell(live, p, (row) => prButtons(row)) },
+          { key: 'decision', label: 'Decision', render: (p) => liveCell(live, p, (row) => prButtons(row, { compact: true })) },
         ],
       }),
       pagination({ ...data, onPage: (page) => setQuery({ page: page > 1 ? page : '' }) })));

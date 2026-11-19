@@ -39,6 +39,8 @@ export function closeDetail() {
   c.token++;
   c.prToken++;
   c.stop();
+  window.removeEventListener('scroll', c.place);
+  window.removeEventListener('resize', c.place);
   c.el.remove();
   document.body.classList.remove('has-drawer');
 }
@@ -100,7 +102,16 @@ function build(handlers) {
     load({ quiet: true });
   });
   close.addEventListener('click', () => requestClose());
-  cur = { el, title, kindLabel, body, handlers, token: 0, prToken: 0, stop, key: '', kind: 'repo', data: null, error: null, prs: null, prState: '', prPage: 1 };
+  // on wide screens the panel starts under the masthead while that is in view, so the top bar stays usable
+  const place = () => {
+    const mast = document.querySelector('.masthead');
+    const top = mast && window.innerWidth >= 1100 ? Math.max(0, Math.round(mast.getBoundingClientRect().bottom)) : 0;
+    el.style.top = `${top}px`;
+  };
+  window.addEventListener('scroll', place, { passive: true });
+  window.addEventListener('resize', place);
+  place();
+  cur = { el, title, kindLabel, body, handlers, place, token: 0, prToken: 0, stop, key: '', kind: 'repo', data: null, error: null, prs: null, prState: '', prPage: 1 };
   document.body.append(el);
   document.body.classList.add('has-drawer');
 }

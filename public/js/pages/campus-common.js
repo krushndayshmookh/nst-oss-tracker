@@ -23,13 +23,21 @@ export const scaleOf = (query = {}) => (query.scale === 'share' || query.scale =
  * disagree about their unit. `name` keeps the button names unique (the router gives focus back by name).
  * `labels` renames an option for a block where the word fits better, e.g. { share: 'Share active' }.
  */
-export function scaleToggle(ctx, name, { labels = {} } = {}) {
+export function scaleToggle(ctx, name, { labels = {}, two = null } = {}) {
+  const scale = scaleOf(ctx.query);
+  // `two: [rateLabel, rawLabel]`: a block with one rate view (a table, a funnel) offers rates or counts only
+  const options = two
+    ? [{ value: 'per100', label: two[0], title: 'Adjusted for the number of tracked students' }, { ...SCALES[2], label: two[1] }]
+    : SCALES.map((o) => ({ ...o, label: labels[o.value] || o.label }));
   return segmented({
-    name: `scale-${name}`, label: 'Unit', value: scaleOf(ctx.query),
-    options: SCALES.map((o) => ({ ...o, label: labels[o.value] || o.label })),
+    name: `scale-${name}`, label: 'Unit', options,
+    value: two && scale === 'share' ? 'per100' : scale,
     onChange: (v) => setQuery({ scale: v === 'per100' ? '' : v }),
   });
 }
+
+/** Short unit for a value axis; the full sentence stands above the chart. */
+export const AXIS = { per100: 'Per 100 students', share: '% of students', raw: 'Count' };
 
 /* ───────────── small formatters ───────────── */
 
@@ -143,20 +151,20 @@ export function campusYearTable(data, { ctx, past = false, rateMode = false, sor
       render: (r) => [r._kind === 'total' && firstColumn !== 'campus' ? 'All years' : yearLabel(r, past), r._kind ? null : [' ', smallMark(r, below)]],
     },
     { key: 'students', sortKey: 'students', label: 'Students', num: true, sortable: true, title: 'Tracked students: the denominator of every rate in the row' },
-    students('Any PR', 'anyPr', 'withAnyPr', 'withAnyPrPct', 'Students with at least one pull request'),
-    students('Open-source PR', 'osPr', 'withOsPr', 'withOsPrPct', 'Students with at least one open-source pull request'),
-    { key: 'withOsMerged', sortKey: 'merged', label: 'Merged PR', num: true, sortable: true, title: 'Students with at least one merged open-source pull request' },
     {
       key: 'withOsMergedPct', sortKey: 'mergedPct', label: '% with merged PR', num: true, sortable: true, class: 'col-rate',
       title: 'Share of the tracked students with a merged open-source pull request', render: (r) => pctVal(r.withOsMergedPct),
     },
-    students('Major project', 'major', 'withMajorMerged', 'withMajorMergedPct', 'Students merged into a major project'),
-    prs('Open-source PRs', 'osPrs', 'osPrs', 'osPrsPer100', 'Open-source pull requests opened', 'open-source pull requests'),
-    { key: 'osMerged', sortKey: 'osMerged', label: 'Merged open-source PRs', num: true, sortable: true },
     {
-      key: 'osMergedPer100', sortKey: 'per100', label: 'Merged per 100 students', num: true, sortable: true, class: 'col-rate',
+      key: 'osMergedPer100', sortKey: 'per100', label: 'Merged per 100', num: true, sortable: true, class: 'col-rate',
       title: 'Merged open-source pull requests per 100 tracked students', render: (r) => rate(r.osMergedPer100),
     },
+    students('Any PR', 'anyPr', 'withAnyPr', 'withAnyPrPct', 'Students with at least one pull request'),
+    students('Open-source PR', 'osPr', 'withOsPr', 'withOsPrPct', 'Students with at least one open-source pull request'),
+    { key: 'withOsMerged', sortKey: 'merged', label: 'Merged PR', num: true, sortable: true, title: 'Students with at least one merged open-source pull request' },
+    students('Major project', 'major', 'withMajorMerged', 'withMajorMergedPct', 'Students merged into a major project'),
+    prs('Open-source PRs', 'osPrs', 'osPrs', 'osPrsPer100', 'Open-source pull requests opened', 'open-source pull requests'),
+    { key: 'osMerged', sortKey: 'osMerged', label: 'Merged PRs', num: true, sortable: true, title: 'Merged open-source pull requests' },
     prs('Major merged', 'majorMerged', 'osMajorMerged', 'osMajorMergedPer100', 'Pull requests merged into major projects', 'merged into major projects'),
     mix ? prs('All PRs', 'totalPrs', 'totalPrs', 'totalPrsPer100', 'Pull requests of every category', 'pull requests') : null,
     mix ? { key: 'mix', label: 'Mix', title: 'All pull requests by category', render: (r) => mixBar(r.byCategory, { merged: r.osMerged, period }) } : null,
@@ -244,7 +252,7 @@ export function campusMonthSeries(activity, { scale = 'per100', metric = 'merged
   return {
     names, mode, unit: cap(unit),
     input: {
-      labels: months, series, tooltipLabel, axisTitle: cap(unit),
+      labels: months, series, tooltipLabel, axisTitle: AXIS[mode],
       format: mode === 'share' ? (v) => pctVal(v) : mode === 'per100' ? (v) => rate(v) : null,
       label: `${cap(unit)}, per month by campus`,
     },
@@ -281,11 +289,11 @@ export function stackRows(rows, { full = false, max = null, empty = 'None in thi
     const summary = sum ? r.parts.filter((p) => p.value > 0).map((p) => `${p.label} ${fmt.pct(p.value, sum)}`).join(', ') : empty;
     return [
       h('dt', null, r.href ? h('a', { href: r.href }, r.label) : r.label, r.sub ? h('small', null, r.sub) : null),
-      h('dd', { class: 'track', role: 'img', 'aria-label': `${r.label}: ${summary}` },
-        sum ? h('span', { class: 'stack', style: { width: `${width}%` } }, r.parts.filter((p) => p.value > 0).map((p) => h('i', {
+      !sum ? h('dd', { class: 'hbars-empty muted' }, empty) : h('dd', { class: 'track', role: 'img', 'aria-label': `${r.label}: ${summary}` },
+        sum ? h('span', { class: 'stackbar', style: { width: `${width}%` } }, r.parts.filter((p) => p.value > 0).map((p) => h('i', {
           class: p.cls, style: { flex: `${p.value} 0 0` }, title: `${p.label}: ${p.title || fmt.num(p.value)} (${fmt.pct(p.value, sum)})`,
         }, full && p.value / sum >= 0.12 ? h('b', null, fmt.pct(p.value, sum)) : null))) : null),
-      h('dd', { class: 'val' }, sum ? r.text : h('span', { class: 'muted' }, empty), sum && r.note ? h('small', null, r.note) : null),
+      sum ? h('dd', { class: 'val' }, r.text, r.note ? h('small', null, r.note) : null) : null,
     ];
   }));
 }
@@ -368,7 +376,7 @@ export function funnelMatrix(groups, { scale, ctx, below = 30, first = 'Campus',
 
 /** What the year-wise bars show in each scale. */
 export function yearMetric(scale) {
-  if (scale === 'share') return { value: (r) => r.withOsMergedPct, text: (r) => pctVal(r.withOsMergedPct), note: (r) => `${fmt.num(r.withOsMerged)} students`, unit: '% of students with a merged open-source PR' };
+  if (scale === 'share') return { value: (r) => r.withOsMergedPct, text: (r) => pctVal(r.withOsMergedPct), note: (r) => `${fmt.num(r.withOsMerged)} ${r.withOsMerged === 1 ? 'student' : 'students'}`, unit: '% of students with a merged open-source PR' };
   if (scale === 'raw') return { value: (r) => r.osMerged, text: (r) => fmt.num(r.osMerged), note: (r) => `${rate(r.osMergedPer100)} per 100`, unit: 'Merged open-source PRs' };
   return { value: (r) => r.osMergedPer100, text: (r) => rate(r.osMergedPer100), note: (r) => `${fmt.num(r.osMerged)} merged`, unit: 'Merged open-source PRs per 100 students' };
 }

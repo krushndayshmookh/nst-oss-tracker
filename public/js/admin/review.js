@@ -35,7 +35,7 @@ function liveCell(view, key, row, render) {
   item.cells.push(() => {
     const active = document.activeElement;
     const name = active && holder.contains(active) ? active.getAttribute('name') : null;
-    holder.replaceChildren(render(row));
+    holder.replaceChildren(...h('div', null, render(row)).childNodes);
     if (name) {
       const again = holder.querySelector(`[name="${CSS.escape(name)}"]`);
       if (again) again.focus({ preventScroll: true });
@@ -156,7 +156,7 @@ async function ownersTab(q, view) {
           { key: 'maxStars', label: 'Top stars', num: true, title: 'Stars of their most-starred repository', render: (o) => fmt.num(o.stats.maxStars) },
           { key: 'mix', label: 'Mix', title: 'How their pull requests are categorised now', width: '110px', render: (o) => categoryBar(o.stats.byCategory) },
           { key: 'state', label: 'Currently', render: (o) => liveCell(view, o.login, o, ownerState) },
-          { key: 'decision', label: 'Decision', render: (o) => liveCell(view, o.login, o, (row) => ownerButtons(row)) },
+          { key: 'decision', label: 'Decision', render: (o) => liveCell(view, o.login, o, (row) => ownerButtons(row, { compact: true })) },
         ],
       }),
       pagination({ ...data, onPage })),
@@ -169,6 +169,18 @@ function writeOpen(key, { replace = false } = {}) {
   const target = href(path, { ...query, open: key || '' });
   if (target === (location.hash || '#/')) return;
   if (replace) history.replaceState(null, '', target); else history.pushState(null, '', target);
+}
+
+/**
+ * Opening or closing the panel narrows or widens the queue on wide screens, which changes row heights.
+ * Keep the row the admin is on where it was on screen.
+ */
+function anchored(tr, fn) {
+  const before = tr && tr.isConnected ? tr.getBoundingClientRect().top : null;
+  fn();
+  if (before === null || !tr.isConnected) return;
+  const shift = tr.getBoundingClientRect().top - before;
+  if (Math.abs(shift) > 1) window.scrollBy(0, shift);
 }
 
 const typing = (t) => Boolean(t && t.closest && t.closest('input, textarea, select, [contenteditable="true"]'));
@@ -200,11 +212,11 @@ export default async function (el, ctx) {
     onOpen: (key) => view.open(key),
     onClose: () => {
       const was = openKey;
+      const i = rowIndex(was);
       openKey = '';
       writeOpen('');
-      closeDetail();
+      anchored(i >= 0 ? trs[i] : null, () => closeDetail());
       mark();
-      const i = rowIndex(was);
       const back = i >= 0 && trs[i] ? trs[i].querySelector('.row-view') : null;
       if (back) back.focus({ preventScroll: true });
     },
@@ -214,7 +226,8 @@ export default async function (el, ctx) {
     openKey = key;
     if (rowIndex(key) >= 0) selection.key = key;
     writeOpen(key, { replace: replace || !fresh });
-    syncDetail(key, handlers);
+    const at = rowIndex(key);
+    anchored(at >= 0 ? trs[at] : null, () => syncDetail(key, handlers));
     mark();
     if (focus) {
       const title = document.getElementById('review-drawer-title');
@@ -247,7 +260,7 @@ export default async function (el, ctx) {
     tr.classList.add('row-click');
     tr.dataset.key = key;
     tr.addEventListener('click', (e) => {
-      if (e.defaultPrevented || e.target.closest('a, button, input, select, textarea, label')) return;
+      if (e.defaultPrevented || e.target.closest('a, button, input, select, textarea, label, .mix, [role="img"][tabindex]')) return;
       if (String(window.getSelection && window.getSelection()) !== '') return; // the admin is selecting text
       view.open(key);
     });

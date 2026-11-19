@@ -10,7 +10,7 @@ import {
 } from './common.js';
 import {
   scaleOf, scaleToggle, rate, pctVal, smallMark, campusYearTable, funnelMatrix, tierMixBlock, categoryMixBlock, yearBars, yearMetric,
-  distributionTable, spreadKey, deltaLine,
+  distributionTable, spreadKey, deltaLine, AXIS,
 } from './campus-common.js';
 
 export default async function (el, ctx) {
@@ -85,7 +85,7 @@ export default async function (el, ctx) {
   let monthInput = null;
   if (scale === 'share' && months.length) {
     monthInput = {
-      labels: months, format: (v) => pctVal(v), axisTitle: '% of tracked students active',
+      labels: months, format: (v) => pctVal(v), axisTitle: AXIS.share, unit: '% of tracked students who opened or merged an open-source PR',
       series: [{ label: 'Active students', color: 1, data: months.map((m) => (cm.get(m) ? cm.get(m).activePct : 0)) }],
       tooltipLabel: (si, di) => { const r = cm.get(months[di]); return `${pctVal(r ? r.activePct : 0)} active · ${fmt.num(r ? r.activeStudents : 0)} of ${fmt.num(t.students)} students`; },
       label: `Share of ${campus} students who opened or merged an open-source pull request, per month`,
@@ -96,7 +96,7 @@ export default async function (el, ctx) {
     const per = scale !== 'raw';
     monthInput = {
       labels: src.map((m) => m.month), format: per ? (v) => rate(v) : null,
-      axisTitle: per ? 'Open-source PRs per 100 tracked students' : 'Open-source PRs',
+      axisTitle: per ? AXIS.per100 : AXIS.raw, unit: per ? 'Open-source PRs per 100 tracked students' : 'Open-source PRs',
       series: [
         { label: 'Opened', color: 1, data: src.map((m) => (per ? m.po : m.o)) },
         { label: 'Merged', color: 'merged', data: src.map((m) => (per ? m.pm : m.m)) },
@@ -120,32 +120,32 @@ export default async function (el, ctx) {
   const pair = campus === 'Unknown' || !all.students ? [{ ...t, funnel: funnelOf(t) }]
     : [{ ...t, funnel: funnelOf(t) }, { ...all, campus: 'All campuses', funnel: funnelOf(all), smallCohort: false }];
   const groupLabel = (g) => (g.campus === campus ? h('b', null, campus) : g.campus);
-  put(el, h('div', { class: 'grid grid-2' },
-    card({ title: 'Open-source pull requests by month', note: scaleToggle(ctx, 'month', { labels: { share: 'Share active' } }) },
-      monthInput ? [
-        h('p', { class: 'chart-unit' }, monthInput.axisTitle),
-        h('div', { class: 'chart-box' }, monthCanvas),
-        h('p', { class: 'card-note' },
-          scale === 'share' ? 'A student is active in a month when they opened or merged an open-source pull request in it. ' : null,
-          open ? 'The current month is incomplete.' : null),
-      ] : h('p', { class: 'muted' }, 'No monthly figures for this period.')),
-    card({ title: 'How far students get', note: scaleToggle(ctx, 'funnel', { labels: { per100: 'Share of students', share: 'Share of students' } }), flush: true },
-      funnelMatrix(pair, { scale, ctx, below, labelOf: groupLabel }),
-      h('p', { class: 'card-note card-note-pad' }, 'Each step is a subset of the one before. Bars are scaled within a column.'))));
-
-  // ── year of study ──
   const ym = yearMetric(scale);
   put(el,
-    h('div', { class: 'section-head' }, h('h2', null, 'By year of study'), scaleToggle(ctx, 'years')),
-    h('div', { class: 'grid grid-main-rev' },
-      card({ title: ym.unit },
+    h('div', { class: 'section-head' }, h('h2', null, 'How far students get'), scaleToggle(ctx, 'funnel', { two: ['Share of students', 'Counts'] })),
+    card({ flush: true },
+      funnelMatrix(pair, { scale, ctx, below, labelOf: groupLabel }),
+      h('p', { class: 'card-note card-note-pad' }, 'Each step is a subset of the one before. Bars are scaled within a column.')),
+    h('div', { class: 'section-head' }, h('h2', null, 'Month by month and by year of study'), scaleToggle(ctx, 'month', { labels: { share: 'Share of students' } })),
+    h('div', { class: 'grid grid-2' },
+      card({ title: 'Open-source pull requests by month', note: monthInput ? monthInput.unit : null },
+        monthInput ? [
+          h('div', { class: 'chart-box' }, monthCanvas),
+          h('p', { class: 'card-note' },
+            scale === 'share' ? 'A student is active in a month when they opened or merged an open-source pull request in it. ' : null,
+            open ? 'The current month is incomplete.' : null),
+        ] : h('p', { class: 'muted' }, 'No monthly figures for this period.')),
+      card({ title: 'By year of study', note: ym.unit },
         years.length ? yearBars(years, { scale, past, below }) : h('p', { class: 'muted' }, 'No students with a known year.'),
-        h('p', { class: 'card-note' }, past ? 'Year of study is as of today; the batch is shown beside it.' : 'Year of study as of today.')),
-      card({ flush: true },
-        campusYearTable({ smallCohortBelow: below }, {
-          ctx, past, rateMode: scale !== 'raw', firstColumn: 'year', caption: `Students and pull requests at ${campus} by year of study`,
-          rows: [...years.map((r) => ({ ...r, _kind: null })), { ...t, _kind: 'total' }],
-        }))));
+        h('p', { class: 'card-note' }, past ? 'Year of study is as of today; the batch is shown beside it.' : 'Year of study as of today.'))),
+    card({ flush: true },
+      campusYearTable({ smallCohortBelow: below }, {
+        ctx, past, rateMode: scale !== 'raw', firstColumn: 'year', caption: `Students and pull requests at ${campus} by year of study`,
+        rows: [...years.map((r) => ({ ...r, _kind: null })), { ...t, _kind: 'total' }],
+      }),
+      h('p', { class: 'card-note card-note-pad' }, scale !== 'raw'
+        ? 'Student columns are shares of the tracked students; pull-request columns are per 100 tracked students. Hover a figure for its count.'
+        : 'Counts, with the two headline rates beside them.')));
 
   // ── what the work is ──
   const mixGroups = campus === 'Unknown' || !all.students ? [t] : [t, { ...all, campus: 'All campuses', smallCohort: false }];

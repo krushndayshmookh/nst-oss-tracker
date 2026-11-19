@@ -4,62 +4,37 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import {
-  h, pageHead, filterBar, statCard, card, table, funnel, categoryBar, barCell, tierBadge, calendarHeatmap, fmt, TIERS, TIER_LABELS,
+  h, pageHead, filterBar, statCard, card, table, funnel, mixBar, mixLegend, barCell, tierBadge, calendarHeatmap, fmt, TIERS, TIER_LABELS,
 } from '../lib/ui.js';
 import { lineChart, barChart, doughnutChart } from '../lib/charts.js';
 import {
-  getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeIsOpen, isPastRange, yearLabel, activityCard, link, studentCell, repoHref, orgHref, csvButton, opts, clean, put
+  getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeSentence, rangeIsOpen, isPastRange, activityCard, link, studentCell, repoHref, orgHref, csvButton, opts, clean, put
 } from './common.js';
+import {
+  scaleOf, scaleToggle, campusYearTable, yearMetric, cohortLabel, campusColor, rate, pctVal, CAMPUS_SORT_DEFAULT, AXIS,
+} from './campus-common.js';
 
-function campusTable(campuses, past) {
-  const rows = [];
-  const byCampus = new Map((campuses.totals || []).map((t) => [t.campus, t]));
-  let last = null;
-  for (const r of campuses.rows || []) {
-    if (last !== null && r.campus !== last && byCampus.has(last)) rows.push({ ...byCampus.get(last), _kind: 'subtotal' });
-    rows.push({ ...r, _kind: r.campus !== last ? 'group' : null });
-    last = r.campus;
-  }
-  if (last !== null && byCampus.has(last)) rows.push({ ...byCampus.get(last), _kind: 'subtotal' });
-  if (campuses.total) rows.push({ ...campuses.total, _kind: 'total' });
-
-  const share = (key) => (r) => h('span', { title: `${fmt.pct(r[key], r.students)} of ${fmt.num(r.students)} students` }, fmt.num(r[key]));
-  return table({
-    caption: 'Students and pull requests by campus and year',
-    rows,
-    rowClass: (r) => r._kind,
-    empty: 'No data yet. An admin needs to import or add students.',
-    columns: [
-      { key: 'campus', label: 'Campus', render: (r) => (r._kind === 'total' ? 'All campuses' : r._kind === 'subtotal' ? `${r.campus} total` : r.campus) },
-      { key: 'year', label: 'Year', render: (r) => yearLabel(r, past) },
-      { key: 'students', label: 'Students', num: true },
-      { key: 'withAnyPr', label: 'Any PR', num: true, title: 'Students with at least one pull request', render: share('withAnyPr') },
-      { key: 'withOsPr', label: 'Open-source PR', num: true, title: 'Students with at least one open-source pull request', render: share('withOsPr') },
-      { key: 'withOsMerged', label: 'Merged PR', num: true, title: 'Students with at least one merged open-source pull request', render: share('withOsMerged') },
-      { key: 'pct', label: '% merged', num: true, title: 'Share of students with a merged open-source pull request', render: (r) => fmt.pct(r.withOsMerged, r.students) },
-      { key: 'withMajorMerged', label: 'Major project', num: true, title: 'Students merged into a major project', render: share('withMajorMerged') },
-      { key: 'osMerged', label: 'Merged open-source PRs', num: true },
-      { key: 'totalPrs', label: 'All PRs', num: true },
-      { key: 'mix', label: 'Mix', title: 'All pull requests by category', render: (r) => categoryBar(r.byCategory) },
-    ],
-  });
-}
-
-/** Campus × year series for the two comparison charts. Unknown campus / year stay in the table only. */
-function campusSeries(campuses) {
+/** Campus × year series for the comparison chart in one scale. Unknown campus / year stay in the table only. */
+function campusSeries(campuses, scale) {
   const rows = (campuses.rows || []).filter((r) => r.campus !== 'Unknown' && r.year !== 'Unknown' && r.students > 0);
   const order = ['1st year', '2nd year', '3rd year', '4th year', 'alumni'];
   const years = order.filter((y) => rows.some((r) => r.year === y));
+  const sizes = new Map((campuses.campuses || []).map((c) => [c.campus, c]));
   const names = [...new Set(rows.map((r) => r.campus))].slice(0, 5);
   const cell = (campus, year) => rows.find((r) => r.campus === campus && r.year === year);
-  const series = (value) => names.map((campus, i) => ({
-    label: campus, color: i + 1,
-    data: years.map((y) => { const r = cell(campus, y); return r ? value(r) : null; }),
-  }));
+  const m = yearMetric(scale);
   return {
-    years, names,
-    share: series((r) => Math.round((r.withOsMerged / r.students) * 1000) / 10),
-    merged: series((r) => r.osMerged),
+    years, names, unit: m.unit,
+    series: names.map((campus, i) => ({
+      label: sizes.has(campus) ? cohortLabel(sizes.get(campus)) : campus, color: campusColor(campus, i),
+      data: years.map((y) => { const r = cell(campus, y); return r ? m.value(r) : null; }),
+    })),
+    format: scale === 'share' ? (v) => pctVal(v) : scale === 'per100' ? (v) => rate(v) : null,
+    tooltipLabel: (si, di) => {
+      const r = cell(names[si], years[di]);
+      if (!r) return null;
+      return `${r.campus} · ${m.text(r)}${scale === 'per100' ? ' per 100' : scale === 'raw' ? ' merged' : ''} · ${m.note(r)} · ${fmt.num(r.students)} students${r.smallCohort ? ' (small cohort)' : ''}`;
+    },
   };
 }
 
@@ -167,18 +142,32 @@ export default async function (el, ctx) {
   if (strip) put(el, strip.el);
 
   // ── campus by year ──
-  const cs = campusSeries(campuses);
-  const shareCanvas = canvas();
-  const mergedCanvas = canvas();
+  // Campuses differ a lot in size: the chart defaults to a rate, and the table sorts by one (SPEC addendum D).
+  const scale = scaleOf(ctx.query);
+  const cs = campusSeries(campuses, scale);
+  const campusCanvas = canvas();
+  const period = rangeSentence(overview.range) || null;
+  const csort = ctx.query.csort || CAMPUS_SORT_DEFAULT;
+  const corder = ctx.query.corder || (csort === 'campus' ? 'asc' : 'desc');
   const campusNote = [filtered ? `All campuses and years. The filter above (${scope}) does not apply here. ` : null,
-    past ? 'Year of study is as of today; the batch is shown beside it.' : 'Year of study as of today.'];
+    past ? 'Year of study is as of today; the batch is shown beside it. ' : 'Year of study as of today. ',
+    h('a', { href: link('/campuses', {}, ctx) }, 'Compare the campuses in detail')];
   put(el, h('div', { class: 'section-head' }, h('h2', null, 'Campus by year'), h('span', { class: 'muted' }, campusNote)));
   if (cs.years.length && cs.names.length) {
-    put(el, h('div', { class: 'grid grid-2' },
-      card({ title: 'Students with a merged open-source PR', note: '% of each cohort' }, h('div', { class: 'chart-box chart-box-sm' }, shareCanvas)),
-      card({ title: 'Merged open-source PRs', note: 'count per cohort' }, h('div', { class: 'chart-box chart-box-sm' }, mergedCanvas))));
+    put(el, card({ title: 'Merged open-source work by campus and year of study', note: scaleToggle(ctx, 'campus') },
+      h('p', { class: 'chart-unit' }, cs.unit),
+      h('div', { class: 'chart-box chart-box-sm' }, campusCanvas),
+      h('p', { class: 'card-note' },
+        scale === 'raw' ? 'Raw counts are not adjusted for the size of a cohort. ' : 'Rates are on the tracked students of each campus and year. ',
+        'The number after a campus is its tracked students.')));
   }
-  put(el, card({ flush: true }, campusTable(campuses, past)));
+  put(el, card({ flush: true },
+    mixLegend(),
+    campusYearTable(campuses, {
+      ctx, past, mix: true, period, sort: csort, order: corder,
+      onSort: (s, o) => { const d = s === CAMPUS_SORT_DEFAULT && o === 'desc'; setQuery({ csort: d ? '' : s, corder: d ? '' : o }); },
+    }),
+    h('p', { class: 'card-note card-note-pad' }, 'Sorted by the share of students with a merged open-source pull request unless you sort otherwise; campuses are ordered by their total.')));
 
   // ── top projects, organisations, students ──
   const seeAll = (text, to) => h('a', { href: to }, text);
@@ -236,7 +225,7 @@ export default async function (el, ctx) {
         prs.osPrs ? h('div', { class: 'chart-box chart-box-sm' }, outcomeCanvas) : h('p', { class: 'muted' }, 'No open-source pull requests yet.'),
         h('p', { class: 'card-note' }, `${fmt.pct(prs.osMerged, prs.osMerged + osClosed)} of the open-source pull requests that have been decided were merged.`)),
       card({ title: 'All pull requests by category', note: fmt.num(prs.total) },
-        categoryBar(prs.byCategory, { legend: true, large: true }),
+        mixBar(prs.byCategory, { merged: prs.osMerged, period, legend: true, large: true }),
         h('p', { class: 'card-note' },
           `Only the ${fmt.pct(prs.byCategory.open_source, prs.total)} classified as open source count towards the headline. `,
           h('a', { href: link('/about', {}, ctx) }, 'How categories work')))),
@@ -252,8 +241,10 @@ export default async function (el, ctx) {
     label: `Open-source pull requests opened and merged per month. ${trendNote || ''}`,
   }));
   if (cs.years.length && cs.names.length) {
-    charts.push(barChart(shareCanvas, { labels: cs.years, series: cs.share, label: 'Share of students with a merged open-source pull request, by campus and year of study' }));
-    charts.push(barChart(mergedCanvas, { labels: cs.years, series: cs.merged, label: 'Merged open-source pull requests by campus and year of study' }));
+    charts.push(barChart(campusCanvas, {
+      labels: cs.years, series: cs.series, format: cs.format, tooltipLabel: cs.tooltipLabel, axisTitle: AXIS[scale],
+      label: `${cs.unit}, by campus and year of study`,
+    }));
   }
   if (prs.osMerged) {
     charts.push(doughnutChart(tierCanvas, {

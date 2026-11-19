@@ -9,6 +9,7 @@ import { lineChart, barChart } from '../lib/charts.js';
 import {
   getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeIsOpen, link, categoryOptions, opts, clean, WEEKDAYS, put,
 } from './common.js';
+import { scaleOf, scaleToggle, campusMonthSeries, unknownToggle } from './campus-common.js';
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const PARTS = [
@@ -225,20 +226,31 @@ export default async function (el, ctx) {
     })));
 
   // ── campuses ──
-  const campusRows = a.byCampusMonth || [];
-  const campusTotals = new Map();
-  for (const r of campusRows) campusTotals.set(r.campus, (campusTotals.get(r.campus) || 0) + val(r));
-  const campusNames = [...campusTotals.keys()].filter((c) => c !== 'Unknown').sort().slice(0, 5);
+  // Campuses differ a lot in size, so the default is a rate on the tracked students of each campus (SPEC addendum D).
   const months = byMonth.map((m) => m.month);
+  const scale = scaleOf(q);
   const campusCanvas = h('canvas');
-  const showCampuses = campusNames.length > 1 && months.length > 0 && !q.campus;
+  const cm = campusMonthSeries(a, { scale, metric, unknown: q.unknown === '1' });
+  const showCampuses = Boolean(cm) && cm.names.length > 1 && !q.campus;
   if (showCampuses) {
-    put(el, card({ title: 'Campuses by month', note: `Pull requests ${word}` },
+    const campusTotals = new Map();
+    for (const r of a.byCampusMonth || []) campusTotals.set(r.campus, (campusTotals.get(r.campus) || 0) + val(r));
+    put(el, card({ title: 'Campuses by month', note: scaleToggle(ctx, 'campus', { labels: { share: 'Share of students active' } }) },
+      h('p', { class: 'chart-unit' }, cm.unit),
       h('div', { class: 'chart-box' }, campusCanvas),
       h('p', { class: 'card-note' },
-        campusNames.map((c) => `${c} ${fmt.num(campusTotals.get(c))}`).join(' · '),
-        '. Counts are not adjusted for the size of a campus; the ',
-        h('a', { href: link('/', {}, ctx) }, 'overview'), ' compares campuses by share of students.')));
+        cm.mode === 'raw'
+          ? ['Raw counts are not adjusted for the size of a campus. In the period: ',
+            cm.names.map((c) => `${c.campus} ${fmt.num(campusTotals.get(c.campus) || 0)}`).join(' · '), '. ']
+          : cm.mode === 'share'
+            ? 'A student is active in a month when they opened or merged a pull request of the selected category in it. '
+            : 'Counts divided by the tracked students of each campus, times 100. ',
+        cm.mode === 'raw' ? null : 'The number after a campus is its tracked students',
+        cm.mode !== 'raw' && (q.year || q.batch) ? ' under the filters above' : null,
+        cm.mode === 'raw' ? null : '. ',
+        cm.names.some((c) => c.smallCohort) ? 'Dashed lines are small cohorts, whose rates swing widely. ' : null,
+        h('a', { href: link('/campuses', {}, ctx) }, 'Compare the campuses')),
+      unknownToggle(ctx, a.cohorts)));
   }
 
   charts.push(barChart(monthCanvas, {
@@ -263,11 +275,6 @@ export default async function (el, ctx) {
     series: [{ label: Word, data: hourVals, color: metric === 'merged' ? 'merged' : 1 }],
     label: `Pull requests ${word} by hour of the day`,
   }));
-  if (showCampuses) {
-    const at = new Map(campusRows.map((r) => [`${r.campus}|${r.month}`, r]));
-    const series = campusNames.map((c, i) => ({ label: c, color: i + 1, data: months.map((m) => val(at.get(`${c}|${m}`))) }));
-    const input = { labels: months, series, label: `Pull requests ${word} per month by campus` };
-    charts.push(months.length <= 6 ? barChart(campusCanvas, input) : lineChart(campusCanvas, input));
-  }
+  if (showCampuses) charts.push(months.length <= 6 ? barChart(campusCanvas, cm.input) : lineChart(campusCanvas, cm.input));
   return () => charts.forEach((c) => c.destroy());
 }

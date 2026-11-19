@@ -26,6 +26,8 @@ function syncActivityNav(meta) {
 
 startRouter([
   { path: '/', page: () => import('./pages/overview.js') },
+  { path: '/campuses', page: () => import('./pages/campuses.js') },
+  { path: '/campuses/:campus', page: () => import('./pages/campus.js') },
   { path: '/students', page: () => import('./pages/students.js') },
   { path: '/students/:username', page: () => import('./pages/student.js') },
   { path: '/projects', page: () => import('./pages/projects.js') },

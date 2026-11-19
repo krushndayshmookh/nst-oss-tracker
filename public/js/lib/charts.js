@@ -201,7 +201,9 @@ function cartesian(type, canvas, input, style) {
           return ` ${ctx.dataset.label || ctx.label || ''}: ${format(v)}`;
         };
       }
-      if (axisTitle) valueAxis.title = { display: true, text: axisTitle, color: t.axis, font: { family: t.font, size: 11 }, padding: { bottom: 4 } };
+      // on a phone the unit is read from the line above the chart; a rotated title would only take width
+      const roomy = !chart.canvas || !chart.canvas.clientWidth || chart.canvas.clientWidth >= 480;
+      if (axisTitle && roomy) valueAxis.title = { display: true, text: axisTitle, color: t.axis, font: { family: t.font, size: 11 }, padding: { bottom: 4 } };
       if (tooltipLabel) {
         base.plugins.tooltip.callbacks.label = (ctx) => {
           const text = tooltipLabel(ctx.datasetIndex, ctx.dataIndex, horizontal ? ctx.parsed.x : ctx.parsed.y);
@@ -210,7 +212,7 @@ function cartesian(type, canvas, input, style) {
       }
       chart.options = { ...base, scales };
     };
-    const shell = { data: { labels: [], datasets: [] }, options: {} };
+    const shell = { data: { labels: [], datasets: [] }, options: {}, canvas };
     paint(shell);
     return { config: { type, data: shell.data, options: shell.options }, paint, set: (next) => { current = { ...current, ...next }; } };
   });
