@@ -3,5 +3,8 @@
 import { readFileSync } from 'node:fs';
 import { mockGitHub } from './github.js';
 
-const spec = JSON.parse(readFileSync(process.env.MOCK_GITHUB_FILE, 'utf8'));
-globalThis.fetch = mockGitHub(spec).fetch;
+// `node --test` also loads every file under test/: without the variable this file does nothing.
+if (process.env.MOCK_GITHUB_FILE) {
+  const spec = JSON.parse(readFileSync(process.env.MOCK_GITHUB_FILE, 'utf8'));
+  globalThis.fetch = mockGitHub(spec).fetch;
+}

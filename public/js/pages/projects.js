@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, barCell, tierBadge, categoryBadge, ghLink, fmt, TIERS, TIER_LABELS } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, repoHref, orgHref, categoryOptions, clean } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeSentence, repoHref, orgHref, categoryOptions, clean, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -15,7 +15,7 @@ export default async function (el, ctx) {
   const openSource = !q.category;
   const max = data.items.reduce((m, r) => Math.max(m, r.stats.merged), 0);
 
-  el.append(
+  put(el, 
     pageHead({
       title: 'Projects',
       lede: [openSource

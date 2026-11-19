@@ -1,0 +1,26 @@
+# Everything the image does not need. The Dockerfile copies only package*.json, src/, scripts/ and public/.
+.git
+.gitignore
+.dockerignore
+Dockerfile
+node_modules
+npm-debug.log*
+*.log
+
+# data and tooling that must never be baked into the image
+data
+legacy
+test
+k8s
+.tmp
+
+# local secrets
+.env
+.env.*
+!.env.example
+.github-token
+.admin-password
+
+# docs
+*.md
+.DS_Store

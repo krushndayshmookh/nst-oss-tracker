@@ -1,0 +1,73 @@
+# EXAMPLE, not part of kustomization.yaml. One-off Job that loads the first dataset with the app image.
+#
+# The image deliberately does not contain data/. The documented way to do the first import is from an admin
+# machine (README, "First import"):
+#     kubectl -n oss-status port-forward svc/mongo 27017
+#     node scripts/import_legacy.js
+#
+# Use this Job only if the data directory (students.csv + raw/*.json) is available inside the cluster, either
+#   a) on a PersistentVolumeClaim (default below: claim `oss-status-import-data`, files at its root), or
+#   b) baked into a derived image (FROM registry.nstsdc.org:5000/oss-status:<tag> + COPY data /data);
+#      then set that image below and delete the `volumes` / `volumeMounts` entries.
+#
+#   cp 50-job-import.yaml.example /tmp/job-import.yaml      # set the image tag in the copy
+#   kubectl apply -f /tmp/job-import.yaml
+#   kubectl -n oss-status logs -f job/oss-status-import
+#   kubectl -n oss-status delete job oss-status-import
+#
+# The import is idempotent: running it again keeps overrides and admin edits.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: oss-status-import
+  namespace: oss-status
+  labels:
+    app.kubernetes.io/name: oss-status-import
+    app.kubernetes.io/part-of: oss-status
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oss-status-import
+        app.kubernetes.io/part-of: oss-status
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: import
+          image: registry.nstsdc.org:5000/oss-status:CHANGE-ME   # same tag as in kustomization.yaml
+          command: ["node", "scripts/import_legacy.js", "--data", "/data"]
+          env:
+            - name: MONGODB_URI
+              value: mongodb://mongo:27017
+            - name: MONGODB_DB
+              value: oss_status
+            - name: NODE_ENV
+              value: production
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: oss-status-import-data

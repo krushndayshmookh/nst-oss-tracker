@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, pagination, card, TIERS, TIER_LABELS, STATE_LABELS } from '../lib/ui.js';
 import {
-  getMeta, hasRanges, rangeParams, rangeControl, rangeSentence, link, repoHref, orgHref, categoryOptions, csvButton, opts, clean, prTable,
+  getMeta, hasRanges, rangeParams, rangeControl, rangeSentence, link, repoHref, orgHref, categoryOptions, csvButton, opts, clean, prTable, put
 } from './common.js';
 
 export default async function (el, ctx) {
@@ -26,7 +26,7 @@ export default async function (el, ctx) {
     q.owner && ['to projects of ', h('a', { href: orgHref(q.owner, ctx) }, q.owner)],
   ].filter(Boolean);
 
-  el.append(
+  put(el, 
     pageHead({
       title: 'Pull requests',
       lede: ['Every pull request by a tracked student to a public repository. Open-source ones are shown unless you choose another category. ', rangeSentence(data.range)],

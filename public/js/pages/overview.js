@@ -8,7 +8,7 @@ import {
 } from '../lib/ui.js';
 import { lineChart, barChart, doughnutChart } from '../lib/charts.js';
 import {
-  getMeta, hasRanges, rangeParams, rangeControl, rangeSentence, link, studentCell, repoHref, orgHref, csvButton, opts, clean,
+  getMeta, hasRanges, rangeParams, rangeControl, rangeSentence, link, studentCell, repoHref, orgHref, csvButton, opts, clean, put
 } from './common.js';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -33,15 +33,14 @@ function campusTable(campuses) {
     empty: 'No data yet. An admin needs to import or add students.',
     columns: [
       { key: 'campus', label: 'Campus', render: (r) => (r._kind === 'total' ? 'All campuses' : r._kind === 'subtotal' ? `${r.campus} total` : r.campus) },
-      { key: 'year', label: 'Year', render: (r) => (r.year === 'All' ? '' : r.batch ? h('span', { title: `Batch ${r.batch}` }, r.year) : r.year) },
+      { key: 'year', label: 'Year', render: (r) => (r.year === 'All' ? 'All years' : r.batch ? h('span', { title: `Batch ${r.batch}` }, r.year) : r.year) },
       { key: 'students', label: 'Students', num: true },
-      { key: 'withAnyPr', label: 'With any PR', num: true, render: share('withAnyPr') },
-      { key: 'withOsPr', label: 'With open-source PR', num: true, render: share('withOsPr') },
-      { key: 'withOsMerged', label: 'With merged', num: true, title: 'Students with at least one merged open-source pull request', render: share('withOsMerged') },
-      { key: 'pct', label: 'Share', num: true, title: 'Share of students with a merged open-source pull request', render: (r) => fmt.pct(r.withOsMerged, r.students) },
-      { key: 'withMajorMerged', label: 'Merged into major', num: true, title: 'Students merged into a major project', render: share('withMajorMerged') },
+      { key: 'withAnyPr', label: 'Any PR', num: true, title: 'Students with at least one pull request', render: share('withAnyPr') },
+      { key: 'withOsPr', label: 'Open-source PR', num: true, title: 'Students with at least one open-source pull request', render: share('withOsPr') },
+      { key: 'withOsMerged', label: 'Merged PR', num: true, title: 'Students with at least one merged open-source pull request', render: share('withOsMerged') },
+      { key: 'pct', label: '% merged', num: true, title: 'Share of students with a merged open-source pull request', render: (r) => fmt.pct(r.withOsMerged, r.students) },
+      { key: 'withMajorMerged', label: 'Major project', num: true, title: 'Students merged into a major project', render: share('withMajorMerged') },
       { key: 'osMerged', label: 'Merged open-source PRs', num: true },
-      { key: 'osPrs', label: 'Open-source PRs', num: true },
       { key: 'totalPrs', label: 'All PRs', num: true },
       { key: 'mix', label: 'Mix', title: 'All pull requests by category', render: (r) => categoryBar(r.byCategory) },
     ],
@@ -86,7 +85,7 @@ export default async function (el, ctx) {
 
   // ── head, range, filters ──
   const sentence = rangeSentence(overview.range);
-  el.append(
+  put(el, 
     pageHead({
       title: 'Open-source work by NST students',
       lede: [
@@ -108,7 +107,7 @@ export default async function (el, ctx) {
   );
 
   // ── headline band ──
-  el.append(h('div', { class: 'cards' },
+  put(el, h('div', { class: 'cards' },
     statCard({
       key: true, label: 'Merged open-source PRs', value: prs.osMerged, sub: `of ${fmt.num(prs.osPrs)} opened`,
       href: link('/prs', { ...cohort, state: 'merged' }, ctx), title: 'See the merged open-source pull requests',
@@ -140,7 +139,8 @@ export default async function (el, ctx) {
     const a = sum(recent, 'osMerged');
     const b = sum(before, 'osMerged');
     const change = Math.round(((a - b) / b) * 100);
-    trendNote = `${fmt.num(a)} merged in the last 12 complete months, ${change >= 0 ? 'up' : 'down'} ${Math.abs(change)}% on the 12 before (${fmt.num(b)}).`;
+    const how = change >= 200 ? `${(a / b).toFixed(1)} times the 12 before` : `${change >= 0 ? 'up' : 'down'} ${Math.abs(change)}% on the 12 before`;
+    trendNote = `${fmt.num(a)} merged in the last 12 complete months, ${how} (${fmt.num(b)}).`;
   }
   const trendCard = card({ title: 'Open-source pull requests by month', note: monthly.length ? `${fmt.month(monthly[0].month)} to ${fmt.month(monthly[monthly.length - 1].month)}` : null },
     h('div', { class: 'chart-box' }, trendCanvas),
@@ -157,27 +157,27 @@ export default async function (el, ctx) {
       { label: 'Merged into a major project', value: students.withMajorMerged },
     ]),
     h('p', { class: 'card-note' }, 'Each bar is a share of the students tracked.'));
-  el.append(h('div', { class: 'grid grid-main' }, trendCard, funnelCard));
+  put(el, h('div', { class: 'grid grid-main' }, trendCard, funnelCard));
 
   // ── campus by year ──
   const cs = campusSeries(campuses);
   const shareCanvas = canvas();
   const mergedCanvas = canvas();
   const campusNote = filtered ? `All campuses and years. The filter above (${scope}) does not apply here.` : 'Year of study as of today.';
-  el.append(h('div', { class: 'section-head' }, h('h2', null, 'Campus by year'), h('span', { class: 'muted' }, campusNote)));
+  put(el, h('div', { class: 'section-head' }, h('h2', null, 'Campus by year'), h('span', { class: 'muted' }, campusNote)));
   if (cs.years.length && cs.names.length) {
-    el.append(h('div', { class: 'grid grid-2' },
+    put(el, h('div', { class: 'grid grid-2' },
       card({ title: 'Students with a merged open-source PR', note: '% of each cohort' }, h('div', { class: 'chart-box chart-box-sm' }, shareCanvas)),
       card({ title: 'Merged open-source PRs', note: 'count per cohort' }, h('div', { class: 'chart-box chart-box-sm' }, mergedCanvas))));
   }
-  el.append(card({ flush: true }, campusTable(campuses)));
+  put(el, card({ flush: true }, campusTable(campuses)));
 
   // ── top projects, organisations, students ──
   const seeAll = (text, to) => h('a', { href: to }, text);
   const maxRepo = Math.max(0, ...overview.topRepos.map((r) => r.osMerged));
   const maxOrg = Math.max(0, ...overview.topOrgs.map((r) => r.osMerged));
   const maxStudent = Math.max(0, ...overview.topStudents.map((s) => s.stats.osMerged));
-  el.append(
+  put(el, 
     h('div', { class: 'section-head' }, h('h2', null, 'Where the merged work lands'),
       h('span', { class: 'muted' }, `Ranked by merged open-source pull requests${scope ? `, ${scope}` : ''}`)),
     h('div', { class: 'grid grid-3' },
@@ -187,7 +187,9 @@ export default async function (el, ctx) {
           columns: [
             {
               key: 'name', label: 'Project',
-              render: (r) => h('span', null, h('a', { href: repoHref(r.name, ctx), title: `${r.name}, ${fmt.compact(r.stars)} stars` }, r.name), ' ', tierBadge(r.tier, { label: false })),
+              render: (r) => h('div', null,
+                h('a', { class: 'cell-clip', style: { maxWidth: '17ch' }, href: repoHref(r.name, ctx), title: r.name }, r.name),
+                h('div', { class: 'sub' }, tierBadge(r.tier), ` ${fmt.compact(r.stars)} stars`)),
             },
             { key: 'osMerged', label: 'Merged', num: true, render: (r) => barCell(r.osMerged, maxRepo) },
             { key: 'students', label: 'Students', num: true },
@@ -216,7 +218,7 @@ export default async function (el, ctx) {
   const tierCanvas = canvas();
   const outcomeCanvas = canvas();
   const osClosed = Math.max(0, prs.osPrs - prs.osMerged - prs.osOpen);
-  el.append(
+  put(el, 
     h('div', { class: 'section-head' }, h('h2', null, 'What the pull requests are'), scope ? h('span', { class: 'muted' }, scope) : null),
     h('div', { class: 'grid grid-3' },
       card({ title: 'Merged by project tier' },
@@ -236,7 +238,7 @@ export default async function (el, ctx) {
   let weekdayCanvas = null;
   if (activity && Array.isArray(activity.byWeekday)) {
     weekdayCanvas = canvas();
-    el.append(card({ title: 'Activity in this period', note: h('a', { href: link('/activity', cohort, ctx) }, 'See all activity') },
+    put(el, card({ title: 'Activity in this period', note: h('a', { href: link('/activity', cohort, ctx) }, 'See all activity') },
       h('div', { class: 'grid grid-main' },
         Array.isArray(activity.byDate) && activity.byDate.length
           ? calendarHeatmap(activity.byDate.map((d) => ({ date: d.date, value: d.opened })), { unit: 'open-source pull requests opened' })

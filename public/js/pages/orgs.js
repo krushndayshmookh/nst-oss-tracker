@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, barCell, ghLink, fmt } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, orgHref, clean } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeSentence, orgHref, clean, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -14,7 +14,7 @@ export default async function (el, ctx) {
   const order = q.order || 'desc';
   const max = data.items.reduce((m, o) => Math.max(m, o.stats.osMerged), 0);
 
-  el.append(
+  put(el, 
     pageHead({
       title: 'Organisations',
       lede: [q.category === 'all'

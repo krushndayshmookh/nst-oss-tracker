@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { h, pageHead, statCard, card, table, barCell, badge, categoryBadge, categoryBar, overrideBadge, calendarHeatmap, fmt, CATEGORIES } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, link, repoHref, contributorsTable, fetchActivity, activityCard } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeSentence, link, repoHref, contributorsTable, fetchActivity, activityCard, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -18,7 +18,7 @@ export default async function (el, ctx) {
   const present = CATEGORIES.filter((c) => st.byCategory[c] > 0);
   const max = data.repos.reduce((m, r) => Math.max(m, r.stats.merged), 0);
 
-  el.append(
+  put(el, 
     pageHead({
       crumbs: [{ label: 'Organisations', href: link('/orgs', {}, ctx) }],
       title: org.login,
@@ -37,9 +37,9 @@ export default async function (el, ctx) {
   );
 
   const strip = activityCard(activity, ctx, { card, calendarHeatmap, linkQuery: { owner: org.login, category: 'all' } });
-  if (strip) el.append(strip.el);
+  if (strip) put(el, strip.el);
 
-  el.append(
+  put(el, 
     card({ title: 'Projects', note: `${fmt.num(data.repos.length)}${data.repos.length === 100 ? '+' : ''}`, flush: true },
       table({
         caption: `Projects of ${org.login}`, rows: data.repos, empty: 'No projects.',

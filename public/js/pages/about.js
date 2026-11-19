@@ -2,7 +2,7 @@
 
 import { api } from '../lib/api.js';
 import { h, pageHead, table, categoryBadge, tierBadge, fmt, CATEGORIES, CATEGORY_HELP } from '../lib/ui.js';
-import { getMeta, link } from './common.js';
+import { getMeta, link, put } from './common.js';
 
 function chips(list, emptyText) {
   if (!list || !list.length) return h('p', { class: 'muted' }, emptyText);
@@ -18,7 +18,7 @@ export default async function (el, ctx) {
   const total = overview ? overview.prs.total : 0;
   const step = (title, text) => h('li', null, h('div', null, h('strong', null, title), ' ', text));
 
-  el.append(
+  put(el, 
     pageHead({
       title: 'How contributions are counted',
       lede: 'What this site counts, how each pull request is put into a category, and where the data comes from.',

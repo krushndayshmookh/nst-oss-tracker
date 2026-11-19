@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, statCard, card, calendarHeatmap, heatGrid, fmt } from '../lib/ui.js';
 import { lineChart, barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, link, categoryOptions, opts, clean, WEEKDAYS } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeSentence, link, categoryOptions, opts, clean, WEEKDAYS, put } from './common.js';
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
@@ -18,7 +18,7 @@ export default async function (el, ctx) {
     a = await api.get('/activity', { ...filters, metric });
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 404) throw err;
-    el.append(
+    put(el, 
       pageHead({ title: 'When students contribute' }),
       h('div', { class: 'notice notice-warn' }, 'Activity analytics are not available on this server yet. ',
         h('a', { href: link('/', {}, ctx) }, 'Back to the overview')));
@@ -29,7 +29,7 @@ export default async function (el, ctx) {
   const val = (row) => (row ? row[metric] || 0 : 0);
   const scope = [q.author && `by ${q.author}`, q.repo && `to ${q.repo}`, q.owner && `to projects of ${q.owner}`].filter(Boolean).join(', ');
 
-  el.append(
+  put(el, 
     pageHead({
       title: 'When students contribute',
       lede: [rangeSentence(a.range), ' ', a.tz === 'Asia/Kolkata' || !a.tz ? 'Times are India Standard Time.' : `Times are in ${a.tz}.`],
@@ -51,7 +51,7 @@ export default async function (el, ctx) {
 
   const busy = a.busiest || {};
   const totals = a.totals || {};
-  el.append(h('div', { class: 'cards' },
+  put(el, h('div', { class: 'cards' },
     statCard({ key: true, label: `Pull requests ${word}`, value: totals[metric], sub: metric === 'opened' ? `${fmt.num(totals.merged)} merged` : `${fmt.num(totals.opened)} opened` }),
     statCard({ label: 'Active students', value: totals.activeStudents }),
     statCard({ label: 'Busiest day', value: busy.day ? busy.day.count : null, sub: busy.day ? fmt.range(busy.day.date, busy.day.date).split(' – ')[0] : null }),
@@ -60,9 +60,9 @@ export default async function (el, ctx) {
 
   const byMonth = a.byMonth || [];
   const monthCanvas = h('canvas');
-  el.append(card({ title: 'Pull requests by month' }, h('div', { class: 'chart-box' }, monthCanvas)));
+  put(el, card({ title: 'Pull requests by month' }, h('div', { class: 'chart-box' }, monthCanvas)));
 
-  el.append(card({ title: 'Day by day', note: `Pull requests ${word}` },
+  put(el, card({ title: 'Day by day', note: `Pull requests ${word}` },
     Array.isArray(a.byDate) && a.byDate.length
       ? calendarHeatmap(a.byDate.map((d) => ({ date: d.date, value: val(d) })), { unit: `pull requests ${word}` })
       : h('p', { class: 'muted' }, a.truncated ? 'The range is too long for a day-by-day view. Choose a shorter range.' : 'No days in this range.')));
@@ -71,12 +71,12 @@ export default async function (el, ctx) {
   const hours = new Map((a.byHour || []).map((d) => [d.hour, d]));
   const dowCanvas = h('canvas');
   const hourCanvas = h('canvas');
-  el.append(h('div', { class: 'grid grid-2' },
+  put(el, h('div', { class: 'grid grid-2' },
     card({ title: 'By day of week' }, h('div', { class: 'chart-box chart-box-sm' }, dowCanvas)),
     card({ title: 'By hour of day' }, h('div', { class: 'chart-box chart-box-sm' }, hourCanvas))));
 
   const cells = new Map((a.heatmap || []).map((c) => [`${c.dow}-${c.hour}`, c]));
-  el.append(card({ title: 'Day of week by hour', note: `Pull requests ${word}` },
+  put(el, card({ title: 'Day of week by hour', note: `Pull requests ${word}` },
     heatGrid({
       rows: WEEKDAYS,
       cols: Array.from({ length: 24 }, (_, i) => (i % 3 === 0 ? String(i).padStart(2, '0') : '')),
@@ -90,7 +90,7 @@ export default async function (el, ctx) {
   const months = byMonth.map((m) => m.month);
   const campusCanvas = h('canvas');
   if (campusNames.length > 1 && months.length) {
-    el.append(card({ title: 'Campuses by month', note: `Pull requests ${word}` }, h('div', { class: 'chart-box' }, campusCanvas)));
+    put(el, card({ title: 'Campuses by month', note: `Pull requests ${word}` }, h('div', { class: 'chart-box' }, campusCanvas)));
   }
 
   charts.push(barChart(monthCanvas, {

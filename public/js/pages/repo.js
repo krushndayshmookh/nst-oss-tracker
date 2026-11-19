@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, statCard, card, pagination, badge, categoryBadge, overrideBadge, calendarHeatmap, fmt, CATEGORY_HELP } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, link, orgHref, prTable, contributorsTable, fetchActivity, activityCard } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeSentence, link, orgHref, prTable, contributorsTable, fetchActivity, activityCard, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -26,7 +26,7 @@ export default async function (el, ctx) {
     : repo.category === 'low_signal' ? `Not counted as open source: ${repo.reason || 'below the thresholds'}.`
       : `Not counted as open source. ${CATEGORY_HELP[repo.category] || ''}`;
 
-  el.append(
+  put(el, 
     pageHead({
       crumbs: [{ label: 'Projects', href: link('/projects', {}, ctx) }, { label: repo.owner, href: orgHref(repo.owner, ctx) }],
       title: repo.name,
@@ -52,9 +52,9 @@ export default async function (el, ctx) {
   );
 
   const strip = activityCard(activity, ctx, { card, calendarHeatmap, linkQuery: { repo: repo.name, category: 'all' } });
-  if (strip) el.append(strip.el);
+  if (strip) put(el, strip.el);
 
-  el.append(
+  put(el, 
     card({ title: 'Students', note: `${fmt.num(data.students.length)}${data.students.length === 100 ? '+' : ''}`, flush: true }, contributorsTable(data.students, ctx)),
     card({ title: 'Pull requests', note: h('a', { href: link('/prs', { repo: repo.name, category: 'all' }, ctx) }, 'Open in the explorer'), flush: true },
       prTable(prs.items, ctx, { project: false }),

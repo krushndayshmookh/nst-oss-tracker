@@ -48,7 +48,7 @@ test('sync (incremental): asks only for recently updated PRs, upserts only the c
   const c = collections(db);
   const [alice] = await insertStudents(db, [{ username: 'Alice', campus: 'RU', batch: 2025, lastSyncedAt: LAST, githubId: 42, loginCheckedAt: LAST }]);
   const A = author('Alice', 42);
-  const unchanged = prNode({ repo: 'apache/airflow', number: 1, state: 'MERGED', updatedAt: '2026-11-10T00:00:00Z', author: A });
+  const unchanged = prNode({ repo: 'apache/airflow', number: 1, state: 'MERGED', updatedAt: '2026-11-17T00:00:00Z', author: A });
   const opened = prNode({ repo: 'apache/airflow', number: 2, state: 'OPEN', createdAt: '2026-11-15T10:00:00Z', updatedAt: '2026-11-15T10:00:00Z', author: A });
   const overridden = prNode({ repo: 'tiny/tool', number: 3, stars: 3, state: 'OPEN', createdAt: '2026-11-16T10:00:00Z', updatedAt: '2026-11-16T10:00:00Z', author: A });
   await upsertPRs(db, alice, [unchanged, opened, overridden]);
@@ -57,20 +57,14 @@ test('sync (incremental): asks only for recently updated PRs, upserts only the c
   await refreshAggregates(db);
   assert.equal((await c.students.findOne({ _id: 'alice' })).stats.osMerged, 1);
 
-  // GitHub now: #2 and #3 got merged, #4 is new; #1 comes back in the 2-day overlap with the same updatedAt
+  // GitHub now: #2 and #3 got merged, #4 is new; #1 comes back in the 2-day overlap with the same updatedAt; #5 is older than the window
   const { gh, opts } = harness([{ login: 'Alice', id: 42, prs: [
-    { ...unchanged, title: 'TITLE THAT MUST NOT BE WRITTEN', updatedAt: '2026-11-19T00:00:00Z' },
+    { ...unchanged, title: 'TITLE THAT MUST NOT BE WRITTEN' }, // same updatedAt as stored: must be skipped
     { ...opened, state: 'MERGED', mergedAt: '2026-11-19T08:00:00Z', closedAt: '2026-11-19T08:00:00Z', updatedAt: '2026-11-19T08:00:00Z' },
     { ...overridden, state: 'MERGED', mergedAt: '2026-11-19T09:00:00Z', closedAt: '2026-11-19T09:00:00Z', updatedAt: '2026-11-19T09:00:00Z' },
     prNode({ repo: 'kubernetes/kubernetes', number: 4, stars: 90000, state: 'OPEN', createdAt: '2026-11-19T10:00:00Z', updatedAt: '2026-11-19T10:00:00Z', author: A }),
     prNode({ repo: 'old/thing', number: 5, state: 'MERGED', createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-01-03T10:00:00Z', author: A }),
   ] }]);
-  // make #1 look untouched on GitHub (same updatedAt as stored), but with a different title: it must be skipped
-  gh.users.get('alice').prs[0].updatedAt = '2026-11-10T00:00:00Z';
-  gh.users.get('alice').prs[0].createdAt = '2026-11-17T00:00:00Z';
-  await c.prs.updateOne({ _id: unchanged.url }, { $set: { updatedAt: new Date('2026-11-17T00:00:00Z') } });
-  gh.users.get('alice').prs[0].updatedAt = '2026-11-17T00:00:00Z';
-
   const ctx = ctxOf();
   const summary = await sync(db, {}, ctx, opts);
 
@@ -165,7 +159,7 @@ test('backfill: a newly added student gets the full history and all aggregates a
     { total: s.stats.totalPrs, merged: s.stats.mergedPrs, os: s.stats.osPrs, osMerged: s.stats.osMerged, osOpen: s.stats.osOpen, major: s.stats.osMajorMerged, repos: s.stats.osRepos, orgs: s.stats.osOrgs, own: s.stats.byCategory.own_repo },
     { total: 62, merged: 42, os: 61, osMerged: 41, osOpen: 20, major: 40, repos: 2, orgs: 2, own: 1 });
   assert.equal(s.stats.firstPrAt.toISOString(), '2024-05-01T00:00:00.000Z');
-  assert.equal(s.stats.lastOsMergedAt.toISOString(), '2026-08-02T00:00:00.000Z');
+  assert.equal(s.stats.lastOsMergedAt.toISOString(), '2026-10-03T10:00:00.000Z'); // fixture default mergedAt of the airflow PRs
 
   const airflow = await c.repos.findOne({ _id: 'apache/airflow' });
   assert.deepEqual({ prs: airflow.stats.prs, merged: airflow.stats.merged, students: airflow.stats.students, campuses: airflow.stats.campuses },

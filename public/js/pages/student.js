@@ -7,7 +7,7 @@ import {
 } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
 import {
-  getMeta, rangeParams, rangeControl, rangeSentence, link, repoHref, studentName, prTable, fetchActivity, activityCard,
+  getMeta, rangeParams, rangeControl, rangeSentence, link, repoHref, studentName, prTable, fetchActivity, activityCard, put
 } from './common.js';
 
 export default async function (el, ctx) {
@@ -28,7 +28,7 @@ export default async function (el, ctx) {
   const charts = [];
 
   const where = [s.campus !== 'Unknown' ? s.campus : null, s.year !== 'Unknown' ? s.year : null, s.batch ? `batch ${s.batch}` : null].filter(Boolean).join(', ');
-  el.append(
+  put(el, 
     pageHead({
       crumbs: [{ label: 'Students', href: link('/students', {}, ctx) }],
       title: studentName(s),
@@ -47,21 +47,22 @@ export default async function (el, ctx) {
   const monthly = data.monthly || [];
   const monthCanvas = h('canvas');
   const anyOs = monthly.some((m) => m.osOpened || m.osMerged);
-  el.append(h('div', { class: 'grid grid-main' },
+  put(el, h('div', { class: 'grid grid-main' },
     card({ title: 'Open-source pull requests by month', note: monthly.length ? `${fmt.month(monthly[0].month)} to ${fmt.month(monthly[monthly.length - 1].month)}` : null },
       anyOs ? h('div', { class: 'chart-box' }, monthCanvas) : h('p', { class: 'muted' }, 'No open-source pull requests in these months.')),
     card({ title: 'What the pull requests are' },
-      st.totalPrs ? categoryBar(st.byCategory, { legend: true, large: true }) : h('p', { class: 'muted' }, 'No public pull requests yet.'),
-      h('dl', { class: 'facts' },
-        h('dt', null, 'First PR'), h('dd', null, fmt.date(st.firstPrAt)),
-        h('dt', null, 'Latest PR'), h('dd', null, fmt.date(st.lastPrAt)),
-        h('dt', null, 'Latest merged open-source PR'), h('dd', null, fmt.date(st.lastOsMergedAt))),
-      h('p', { class: 'card-note' }, h('a', { href: link('/about', {}, ctx) }, 'How categories work')))));
+      h('div', { class: 'stack' },
+        st.totalPrs ? categoryBar(st.byCategory, { legend: true, large: true }) : h('p', { class: 'muted' }, 'No public pull requests yet.'),
+        h('dl', { class: 'facts' },
+          h('dt', null, 'First PR'), h('dd', null, fmt.date(st.firstPrAt)),
+          h('dt', null, 'Latest PR'), h('dd', null, fmt.date(st.lastPrAt)),
+          h('dt', null, 'Latest merged open-source PR'), h('dd', null, fmt.date(st.lastOsMergedAt))),
+        h('p', { class: 'card-note' }, h('a', { href: link('/about', {}, ctx) }, 'How categories work'))))));
 
   const strip = activityCard(activity, ctx, { card, calendarHeatmap, linkQuery: { author: s.username } });
-  if (strip) el.append(strip.el);
+  if (strip) put(el, strip.el);
 
-  el.append(card({ title: 'Projects contributed to', note: `${fmt.num(data.repos.length)}${data.repos.length === 100 ? '+' : ''}`, flush: true },
+  put(el, card({ title: 'Projects contributed to', note: `${fmt.num(data.repos.length)}${data.repos.length === 100 ? '+' : ''}`, flush: true },
     table({
       caption: 'Projects contributed to', compact: true, rows: data.repos, empty: 'No pull requests yet.',
       columns: [
@@ -74,7 +75,7 @@ export default async function (el, ctx) {
       ],
     })));
 
-  el.append(card({ title: 'Pull requests', flush: true },
+  put(el, card({ title: 'Pull requests', flush: true },
     tabs([
       { label: 'Open source', value: '', count: st.osPrs, active: !all },
       { label: 'All', value: 'all', count: st.totalPrs, active: all },

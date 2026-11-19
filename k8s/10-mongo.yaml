@@ -1,0 +1,109 @@
+# MongoDB 7, single node, data on a 5Gi Longhorn volume.
+# No authentication is configured: the database is reachable only from pods in this namespace
+# (headless ClusterIP service + NetworkPolicy below). Do not expose it through an Ingress or NodePort.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: oss-status
+  labels:
+    app.kubernetes.io/name: mongo
+    app.kubernetes.io/part-of: oss-status
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: mongo
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: oss-status
+  labels:
+    app.kubernetes.io/name: mongo
+    app.kubernetes.io/part-of: oss-status
+spec:
+  serviceName: mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongo
+        app.kubernetes.io/part-of: oss-status
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999        # `mongodb` user of the official image
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: mongo
+          image: mongo:7
+          args: ["--bind_ip_all", "--wiredTigerCacheSizeGB", "0.5"]
+          ports:
+            - name: mongo
+              containerPort: 27017
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          startupProbe:
+            tcpSocket:
+              port: mongo
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: mongo
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: mongo
+            periodSeconds: 20
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: longhorn
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-namespace-only
+  namespace: oss-status
+  labels:
+    app.kubernetes.io/part-of: oss-status
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mongo
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}     # any pod in this namespace, nothing from other namespaces
+      ports:
+        - protocol: TCP
+          port: 27017

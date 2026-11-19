@@ -72,6 +72,11 @@ export function rangeSentence(range) {
 
 /* ───────────── small pieces ───────────── */
 
+/** el.append() that skips null / false (Element.append would print "null"). */
+export function put(el, ...nodes) {
+  el.append(...nodes.flat().filter((n) => n !== null && n !== undefined && n !== false));
+}
+
 export const studentName = (s) => (s && (s.name || s.username)) || '';
 
 /** "RU · 2nd year" as plain text; unknown parts are left out. */

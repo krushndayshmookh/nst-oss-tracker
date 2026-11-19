@@ -1,0 +1,16 @@
+# kubectl apply -k k8s/
+# The Secret `oss-status-secrets` is created by hand (see secret.example.yaml) and must exist before the pods start.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 10-mongo.yaml
+  - 20-app.yaml
+  - 30-ingress.yaml
+  - 40-cronjob-sync.yaml
+
+# The one place where the image tag is set (used by the Deployment and the CronJob).
+images:
+  - name: registry.nstsdc.org:5000/oss-status
+    newTag: "1.0.0"

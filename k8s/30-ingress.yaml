@@ -1,0 +1,23 @@
+# https://oss.nstsdc.org -> Traefik -> Service oss-status:80.
+# Plain HTTP inside the cluster: TLS is terminated by Cloudflare and *.nstsdc.org already resolves, so no tls: block.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oss-status
+  namespace: oss-status
+  labels:
+    app.kubernetes.io/name: oss-status
+    app.kubernetes.io/part-of: oss-status
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: oss.nstsdc.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oss-status
+                port:
+                  name: http

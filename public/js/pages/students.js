@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, categoryBar, barCell, fmt } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, studentCell, csvButton, opts, clean } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeSentence, studentCell, csvButton, opts, clean, put } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -15,7 +15,7 @@ export default async function (el, ctx) {
   const max = data.items.reduce((m, s) => Math.max(m, s.stats.osMerged), 0);
   const any = Object.keys(filters).length > 0;
 
-  el.append(
+  put(el, 
     pageHead({
       title: 'Students',
       lede: ['Every tracked student, ranked by merged open-source pull requests unless you sort otherwise. ', rangeSentence(data.range)],
