@@ -13,12 +13,13 @@ import { loadRules } from '../rules.js';
 import { csvLine } from '../csv.js';
 import { ApiError, notFound } from '../auth.js';
 import { createCache, generation } from '../cache.js';
+import { repoTechMap, techBase, techMix, techView, LANG_NONE } from '../tech.js';
 import { RangeError400, TZ, loadAcademicYear, presets, rangeOut, resolveRange } from '../dates.js';
 import {
-  AGG, activity, allOf, groupStats, monthlySeries, ownerStats, rangeFlags, rangeMatch, repoStats, studentStats, sumIf,
+  AGG, OS, activity, allOf, and, groupStats, monthlySeries, ownerStats, rangeFlags, rangeMatch, repoStats, studentStats, sumIf,
 } from '../ranged.js';
 import {
-  COLLATION, STATES, badRequest, cohortFilter, contains, findStudent, flag, iso, lc, oneOf, orgOut, paging, prFilter, prOut, prPage,
+  COLLATION, STATES, badRequest, cohortFilter, contains, escapeRegex, findStudent, flag, iso, lc, oneOf, orgOut, paging, prFilter, prOut, prPage,
   prRangeFilter, repoOut, rulesOut, search, sorting, str, studentOut,
 } from './common.js';
 
@@ -29,7 +30,7 @@ export const RESPONSE_CACHE_BYTES = 32 * 1024 * 1024;
 export const GROUPS_PRESET = 9; // e.g. 3 ranges x (students, repos, orgs)
 export const GROUPS_CUSTOM = 3;
 const KNOWN_PARAMS = ['campus', 'year', 'batch', 'category', 'state', 'tier', 'q', 'from', 'to', 'range', 'sort', 'order', 'page', 'limit',
-  'author', 'repo', 'owner', 'hasOs', 'metric'];
+  'author', 'repo', 'owner', 'hasOs', 'metric', 'by', 'language', 'domain'];
 
 const collator = new Intl.Collator('en', { sensitivity: 'accent' });
 /** Mongo sort spec: the chosen field, then a tie-breaker (skipped when it is the chosen field itself, or it would overwrite the direction), then _id. */
@@ -132,6 +133,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
       counts: { students, prs },
       rulesSummary: rulesOut(rules),
       academicYear: ay, tz, presets: presets(ay, now, tz),
+      techDomains: (await repoTechMap(db)).compiled.domains, // [{key, label}] of addendum H
     });
   });
 
@@ -268,6 +270,50 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     });
   });
 
+  /** Active tracked students per campus under the campus / year / batch filters of a query (addendum D denominators). */
+  async function cohortSizes(query, now) {
+    const groups = await c.students.aggregate([{ $match: { active: true, ...cohortFilter(query, now) } }, { $group: { _id: '$campus', n: { $sum: 1 } } }], AGG).toArray();
+    const sizes = new Map();
+    for (const g of groups) sizes.set(g._id || 'Unknown', (sizes.get(g._id || 'Unknown') || 0) + g.n);
+    return sizes;
+  }
+
+  // ---------- technologies (addendum H) ----------
+
+  // The PR data behind both views (language / domain) of one range + category + cohort is computed once and shared.
+  const techBases = createCache({ ttlMs: groupTtl, max: 12 });
+
+  r.get('/tech', async (req, res) => {
+    const now = new Date();
+    const range = await rangeOf(req, now);
+    const by = oneOf(req.query, 'by', ['language', 'domain'], 'language');
+    const category = oneOf(req.query, 'category', [...CATEGORIES, 'all'], 'open_source');
+    const cohort = cohortFilter(req.query, now);
+    const key = JSON.stringify([rangeKey(range), category, cohort]);
+    const [base, sizes] = await Promise.all([
+      techBases.memo(key, () => techBase(db, { range, category, cohort, tz })),
+      cohortSizes(req.query, now),
+    ]);
+    res.json({
+      range: rangeOut(range), category,
+      filters: { campus: str(req.query, 'campus') || null, year: str(req.query, 'year') || null, batch: str(req.query, 'batch') || null },
+      ...techView(base, { by, cohorts: sizes, range, now, tz, smallCohortBelow: SMALL_COHORT }),
+    });
+  });
+
+  /** Language and domain mix of the PRs matching `match` in the range (student profile, org page). */
+  async function techOf(match, range) {
+    const { opened, merged } = rangeFlags(range);
+    const [groups, repos] = await Promise.all([
+      c.prs.aggregate([
+        { $match: allOf({ active: true }, match, rangeMatch(range)) },
+        { $group: { _id: '$repoLc', prs: sumIf(opened), merged: sumIf(merged), osPrs: sumIf(and(OS, opened)), osMerged: sumIf(and(OS, merged)) } },
+      ], AGG).toArray(),
+      repoTechMap(db),
+    ]);
+    return techMix(groups, repos.map, repos.compiled);
+  }
+
   // ---------- activity (addendum A3) ----------
 
   r.get('/activity', async (req, res) => {
@@ -284,9 +330,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     const owner = str(req.query, 'owner');
     if (owner) match.ownerLc = lc(owner);
     // cohort sizes for per-100 rates: active tracked students under the same campus / year / batch filters (addendum D)
-    const groups = await c.students.aggregate([{ $match: { active: true, ...cohortFilter(req.query, now) } }, { $group: { _id: '$campus', n: { $sum: 1 } } }], AGG).toArray();
-    const sizes = new Map();
-    for (const g of groups) sizes.set(g._id || 'Unknown', (sizes.get(g._id || 'Unknown') || 0) + g.n);
+    const sizes = await cohortSizes(req.query, now);
     const a = await activity(db, { match, range, metric, tz, now, cohorts: sizes });
     for (const row of a.byCampusMonth) if (!sizes.has(row.campus)) sizes.set(row.campus, 0);
     const { busiest, byDate, truncated, ...rest } = a;
@@ -352,7 +396,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     const admin = req.isAdmin;
     const { opened, merged } = rangeFlags(range);
     const match = { active: true, author: s._id };
-    const [ranged, series, repoGroups, prs] = await Promise.all([
+    const [ranged, series, repoGroups, prs, tech] = await Promise.all([
       range.all ? null : groupStats(db, { by: 'author', range, match: { author: s._id } }),
       monthlySeries(db, { match: { author: s._id }, range, tz, now }),
       c.prs.aggregate([
@@ -364,6 +408,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
         { $limit: 100 },
       ], AGG).toArray(),
       prPage(db, allOf(match, prRangeFilter(range)), { page: 1, limit: 25, skip: 0, admin }),
+      techOf({ author: s._id }, range),
     ]);
     const stats = ranged ? (ranged.has(s._id) ? studentStats(ranged.get(s._id)) : emptyStudentStats()) : s.stats;
     res.json({
@@ -372,6 +417,7 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
       monthly: series,
       repos: repoGroups.map((g) => ({ name: g.name, stars: g.stars ?? 0, category: g.category, tier: g.tier ?? null, prs: g.prs, merged: g.merged, lastPrAt: iso(g.lastPrAt) })),
       prs,
+      tech, // { language: [{key, label, prs, merged, osPrs, osMerged, repos}], domain: [...] } over every category (addendum H)
     });
   });
 
@@ -411,6 +457,21 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
     if (tier) f.tier = tier;
     const owner = str(req.query, 'owner');
     if (owner) f.ownerLc = lc(owner);
+    // technology filters (addendum H): the language a repo is counted under on /api/tech, or its domain
+    const language = str(req.query, 'language');
+    if (language.length > 100) throw badRequest('invalid language: at most 100 characters');
+    if (language) {
+      const exact = { $regex: `^${escapeRegex(language)}$`, $options: 'i' };
+      f.$and = [language === LANG_NONE
+        ? { language: null, 'languages.0': { $exists: false } }
+        : { $or: [{ language: exact }, { language: null, 'languages.0.name': exact }] }];
+    }
+    const domain = str(req.query, 'domain');
+    if (domain) {
+      const { labels } = (await repoTechMap(db)).compiled;
+      if (!labels.has(domain)) throw badRequest(`invalid domain: expected one of ${[...labels.keys()].join(', ')}`);
+      f.domain = domain;
+    }
     const q = search(req.query);
     if (q) f.$or = [{ name: contains(q) }, { description: contains(q) }];
     const admin = req.isAdmin;
@@ -527,7 +588,8 @@ export function publicRouter({ db, auth, config = {}, cache = null }) {
       repos = docs.map((d) => ({ ...d, stats: repoStats(ranged.get(d._id)) }))
         .sort((a, b) => b.stats.prs - a.stats.prs || b.stats.merged - a.stats.merged || (a._id < b._id ? -1 : 1)).slice(0, 100);
     }
-    res.json({ range: rangeOut(range), org: orgOut({ ...org, stats }, { admin }), repos: repos.map((d) => repoOut(d, { admin })), students: await contributors({ ownerLc: id }, range, now) });
+    const [students, tech] = await Promise.all([contributors({ ownerLc: id }, range, now), techOf({ ownerLc: id }, range)]);
+    res.json({ range: rangeOut(range), org: orgOut({ ...org, stats }, { admin }), repos: repos.map((d) => repoOut(d, { admin })), students, tech });
   });
 
   // ---------- CSV exports ----------

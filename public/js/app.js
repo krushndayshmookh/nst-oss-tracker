@@ -36,6 +36,7 @@ startRouter([
   { path: '/orgs/:login', page: () => import('./pages/org.js') },
   { path: '/prs', page: () => import('./pages/prs.js') },
   { path: '/activity', page: () => import('./pages/activity.js') },
+  { path: '/tech', page: () => import('./pages/tech.js') },
   { path: '/about', page: () => import('./pages/about.js') },
 ], document.getElementById('app'), {
   onNavigate: async (ctx) => {

@@ -3,12 +3,13 @@
 import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, barCell, tierBadge, categoryBadge, ghLink, fmt, TIERS, TIER_LABELS } from '../lib/ui.js';
-import { getMeta, rangeParams, rangeControl, rangeLine, repoHref, orgHref, campusList, categoryOptions, clean, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, repoHref, orgHref, campusList, categoryOptions, clean, put, link } from './common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
   const q = ctx.query;
-  const filters = clean({ q: q.q, category: q.category, tier: q.tier, owner: q.owner, ...rangeParams(q, meta) });
+  const filters = clean({ q: q.q, category: q.category, tier: q.tier, owner: q.owner, language: q.language, domain: q.domain, ...rangeParams(q, meta) });
+  const domainName = q.domain ? ((meta.techDomains || []).find((d) => d.key === q.domain) || { label: q.domain }).label : '';
   const data = await api.get('/repos', { ...filters, sort: q.sort, order: q.order, page: q.page });
   const sort = q.sort || 'prs';
   const order = q.order || 'desc';
@@ -36,6 +37,10 @@ export default async function (el, ctx) {
     }),
     q.owner ? h('div', { class: 'notice' }, 'Showing projects owned by ', h('a', { href: orgHref(q.owner, ctx) }, q.owner), '. ',
       h('button', { type: 'button', class: 'btn btn-link', onClick: () => setQuery({ owner: '', page: '' }) }, 'Show every owner')) : null,
+    q.language || q.domain ? h('div', { class: 'notice' }, 'Showing projects ',
+      q.language ? ['whose main language is ', h('b', null, q.language)] : ['in the technology area ', h('b', null, domainName)], '. ',
+      h('a', { href: link('/tech', clean({ by: q.domain ? 'domain' : '', cat: q.category === 'all' ? 'all' : '' }), ctx) }, 'All technologies'), ' · ',
+      h('button', { type: 'button', class: 'btn btn-link', name: 'clear-tech', onClick: () => setQuery({ language: '', domain: '', page: '' }) }, 'Show every technology')) : null,
     card({ flush: true },
       table({
         caption: 'Projects',
@@ -54,7 +59,8 @@ export default async function (el, ctx) {
             ? { key: 'tier', label: 'Tier', render: (r) => tierBadge(r.tier) }
             : { key: 'category', label: 'Category', render: (r) => categoryBadge(r.category, r.tier) },
           { key: 'stars', label: 'Stars', num: true, sortable: true, render: (r) => h('span', { title: fmt.num(r.stars) }, fmt.compact(r.stars)) },
-          { key: 'language', label: 'Language' },
+          { key: 'language', label: 'Language', render: (r) => h('div', null, r.language || (r.languages && r.languages[0] && r.languages[0].name) || h('span', { class: 'muted' }, '(none)'),
+            r.domainLabel ? h('div', { class: 'sub', title: r.domainReason ? `Technology area by ${r.domainReason}` : null }, r.domainLabel) : null) },
           { key: 'stats.students', sortKey: 'students', label: 'Students', num: true, sortable: true },
           { key: 'stats.prs', sortKey: 'prs', label: 'PRs', num: true, sortable: true },
           { key: 'stats.merged', sortKey: 'merged', label: 'Merged', num: true, sortable: true, render: (r) => barCell(r.stats.merged, max) },

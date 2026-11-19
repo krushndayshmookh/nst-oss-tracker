@@ -249,10 +249,12 @@ export async function reclassify(db, { prFilter = {}, repoFilter = {}, ctx = nul
   return result;
 }
 
-/** Recomputes every PR and repo with the current rules, then all aggregates. */
+/** Recomputes every PR and repo with the current rules, the technology domain of every repo (SPEC addendum H), then all aggregates. */
 export async function reclassifyAll(db) {
   invalidateContext();
   const result = await reclassify(db, { prFilter: {}, repoFilter: {} });
+  const { ensureDomains } = await import('./tech.js');
+  await ensureDomains(db, { force: true });
   await refreshAggregates(db);
   return result;
 }

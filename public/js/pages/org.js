@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { h, pageHead, statCard, card, table, barCell, badge, categoryBadge, mixBar, overrideBadge, calendarHeatmap, fmt, CATEGORIES } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
 import { getMeta, rangeParams, rangeControl, rangeLine, rangeSentence, isPastRange, link, repoHref, contributorsTable, fetchActivity, activityCard, put } from './common.js';
+import { techList } from './tech-common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -36,6 +37,15 @@ export default async function (el, ctx) {
       statCard({ label: 'All PRs', value: st.prs, sub: `${fmt.num(st.merged)} merged`, href: link('/prs', { owner: org.login, category: 'all' }, ctx) })),
     present.length > 1 ? card({ title: 'All pull requests by category' }, mixBar(st.byCategory, { merged: st.osMerged ?? null, period: rangeSentence(data.range) || null, legend: true, large: true })) : null,
   );
+
+  // technology mix of the PRs to this organisation (SPEC addendum H): only worth a card when it has several
+  const tech = data.tech || null;
+  if (tech && ((tech.language || []).length > 1 || (tech.domain || []).length > 1)) {
+    const opts = { ctx, all: true, n: 5, value: (r) => r.prs, text: (r) => `${fmt.num(r.prs)} PRs`, note: (r) => `${fmt.num(r.merged)} merged` };
+    put(el, h('div', { class: 'grid grid-2' },
+      card({ title: 'Languages of the pull requests' }, techList(tech.language || [], { ...opts, by: 'language' })),
+      card({ title: 'Technology areas' }, techList(tech.domain || [], { ...opts, by: 'domain' }))));
+  }
 
   const strip = activityCard(activity, ctx, { card, calendarHeatmap, linkQuery: { owner: org.login, category: 'all' } });
   if (strip) put(el, strip.el);

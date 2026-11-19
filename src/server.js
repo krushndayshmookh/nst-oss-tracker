@@ -15,6 +15,7 @@ import { ensureAcademicYear } from './dates.js';
 import { createOwnerAuth } from './owner.js';
 import { ownerRouter } from './routes/owner.js';
 import { ensurePrograms } from './programs.js';
+import { ensureDomains } from './tech.js';
 
 const CSP = ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data:", "connect-src 'self'",
   "font-src 'self'", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'", "form-action 'self'"].join('; ');
@@ -119,6 +120,13 @@ async function main() {
   await ensureRules(db);
   await ensureAcademicYear(db);
   await ensurePrograms(db);
+  // technology domains of the repos (SPEC addendum H): recomputed when the rule table changed since the last boot
+  try {
+    const d = await ensureDomains(db);
+    if (d.recomputed) console.log(`technology domains recomputed: ${d.changed} of ${d.repos} repos changed`);
+  } catch (e) {
+    console.warn('could not recompute technology domains:', e?.message || e);
+  }
   if (config.ownerProblem && config.ownerPassword) console.warn(`WARNING: the private page is closed: ${config.ownerProblem}`);
   const app = createApp({ db, config });
   // Listen first and only then start the job runner and the scheduler: a process that cannot bind its port (already in

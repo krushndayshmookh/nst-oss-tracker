@@ -5,6 +5,7 @@ import { CAMPUSES, CATEGORIES, TIERS, YEAR_LABELS, batchesForYear, yearLabel } f
 import { emptyByCategory, emptyOwnerStats, emptyRepoStats, emptyStudentStats } from '../ingest.js';
 import { inRange } from '../dates.js';
 import { allOf } from '../ranged.js';
+import { domainLabel } from '../tech.js';
 
 export { ApiError, badRequest };
 export const STATES = ['open', 'merged', 'closed'];
@@ -205,6 +206,10 @@ export function repoOut(r, { admin = false } = {}) {
     name: r.name || r._id, owner: r.owner, ownerType: r.ownerType, stars: r.stars ?? 0, forks: r.forks ?? 0, language: r.language ?? null,
     license: r.license ?? null, description: r.description ?? null, isFork: Boolean(r.isFork), isArchived: Boolean(r.isArchived),
     category: r.category, tier: r.tier ?? null, reason: r.reason || '', override: r.override ?? null, overrideNote: admin ? (r.overrideNote ?? null) : null,
+    // technology (SPEC addendum H): languages by size and topics arrive with the repo metadata refresh
+    languages: (r.languages || []).map((l) => ({ name: l.name, pct: l.pct ?? null })), topics: r.topics || [],
+    domain: r.domain || 'other', domainLabel: domainLabel(r.domain || 'other'), domainReason: r.domainReason || '',
+    metaFetchedAt: iso(r.metaFetchedAt), metaStatus: r.metaStatus || null,
     stats: { prs: s.prs, merged: s.merged, open: s.open, closed: s.closed, students: s.students, campuses: s.campuses || [],
       firstPrAt: iso(s.firstPrAt), lastPrAt: iso(s.lastPrAt) },
   };

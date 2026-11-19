@@ -516,3 +516,31 @@ a program, then `"calibrated"` (the UI may then ALSO show the per-band past sele
 ```
 
 - DECISION (Krushn, 19 Nov 2026): no minimum length is enforced for OWNER_PASSWORD (remove the >= 16 rule in G1). Keep: non-empty, not a placeholder, different from ADMIN_PASSWORD, rate-limited login. Do not reintroduce the length check.
+
+# SPEC addendum H — technology distribution (Krushn, 19 Nov 2026)
+Question to answer: what technologies are students working on and contributing to (hypothesis: mostly web / JS).
+## H1. Data
+- Language: already stored as `repos.language` (GitHub primaryLanguage). Add `repos.languages` = top languages by bytes (GraphQL
+  `languages(first:5, orderBy:{field:SIZE,direction:DESC}){edges{size node{name}}}`) and `repos.topics` (`repositoryTopics(first:10)`).
+- Fetch: add both to the PR search query's repository fields (so daily sync keeps them fresh) AND a one-off/periodic enrichment job
+  `repoMeta` (+ `scripts/enrich_repos.js`) that refreshes metadata for all repos via GraphQL `nodes`/`repository(owner,name)` in batches of
+  ~40 aliased repositories per query, rate-limit aware, resumable, recording `metaFetchedAt`. Runnable from the admin Jobs page ("Refresh repo
+  metadata"). Missing/renamed/private repos are marked, never crash the run.
+- Domain (technology area) derived by a transparent rule table in `config/tech-domains.json` (editable later by admins via Rules):
+  ordered rules matching topics, language and repo/org name keywords → one primary domain per repo from:
+  Web frontend, Web backend / APIs, Full-stack web, Mobile, AI / ML & data, DevOps / cloud / infra, Systems / low-level, Security,
+  Developer tools & CLIs, Blockchain / web3, Docs & content, Education / learning, Games & graphics, Other.
+  Each repo also keeps `domainReason` (which rule matched). Language "(none)" and Jupyter handled explicitly.
+## H2. API (public, range-aware, same caching/latency rules)
+`GET /api/tech?by=language|domain&category=open_source(default)|all&campus&year&batch&from&to&range`
+→ `{ range, by, rows:[{key, prs, merged, students, repos, share, mergedShare, topRepos:[…3], topStudents?:none}],
+     byCampus:[{campus, key, merged, per100}], byMonth:[{month, key, merged}] (top 8 keys + Other), totals }`.
+Student profile gains `tech:[{key, prs, merged}]` (language and domain); repo/org payloads include language, languages, topics, domain.
+## H3. UI
+New public page **Technologies** (`#/tech`, nav item): toggle Language | Domain; toggle Open source (default) | All work, explained in one line
+("All work includes own and course repos"); horizontal bar chart of merged PRs and contributors per key with share %, table with top repos per key;
+campus × technology heat table with per-100 rates (addendum D); trend of top technologies by month; click a key → filtered Projects list.
+Overview gets a compact "Top technologies" strip; student profile shows their language/domain mix; Campuses page gets a tech mix per campus.
+## H4. Tests
+Domain rules on fixtures (topics win over language; first match wins; unknown → Other), aggregation totals equal overview totals,
+enrichment batching/rate limit with mocked fetch, missing repo handling.

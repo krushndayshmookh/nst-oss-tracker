@@ -22,15 +22,16 @@
 // Tests (or other modules) can replace any handler with registerHandler(type, fn).
 //
 // Built-in handlers: `reclassify` (classify.reclassifyAll). `import` is registered by scripts/import_legacy.js.
+// `scores` and `repoMeta` (repo metadata refresh, SPEC addendum H) load their modules lazily.
 import crypto from 'node:crypto';
 import { collections } from './db.js';
 import { invalidateContext, reclassifyAll } from './classify.js';
 import { refreshAggregates } from './ingest.js';
 import { invalidateAll } from './cache.js';
 
-export const JOB_TYPES = ['backfill', 'sync', 'reclassify', 'import', 'scores'];
+export const JOB_TYPES = ['backfill', 'sync', 'reclassify', 'import', 'scores', 'repoMeta'];
 // After one of these finishes, the private readiness scores (SPEC addendum G) are recomputed.
-const CHANGES_PR_DATA = new Set(['backfill', 'sync', 'reclassify', 'import']);
+const CHANGES_PR_DATA = new Set(['backfill', 'sync', 'reclassify', 'import', 'repoMeta']);
 const LOG_LINES = 200;
 const LAZY = new Set(['backfill', 'sync']);
 
@@ -66,6 +67,7 @@ async function getHandler(type) {
     return fn;
   }
   if (type === 'scores') return (await import('./scores.js')).scoresJob;
+  if (type === 'repoMeta') return (await import('./repoMeta.js')).repoMetaJob; // SPEC addendum H
   throw new Error(`no handler registered for job type ${type}`);
 }
 

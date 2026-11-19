@@ -1,6 +1,7 @@
 // PR ingestion (raw GraphQL nodes -> prs / repos / owners) and aggregate refresh (SPEC sections 2-4).
 import { collections } from './db.js';
 import { CATEGORIES, classify, loadContext, reclassify } from './classify.js';
+import { recomputeDomains } from './tech.js';
 
 const lc = (s) => String(s ?? '').toLowerCase();
 const date = (v) => {
@@ -9,6 +10,24 @@ const date = (v) => {
   return Number.isNaN(d.getTime()) ? null : d;
 };
 const num = (v) => (Number.isFinite(v) ? v : 0);
+
+/**
+ * GraphQL `languages{totalSize edges{size node{name}}}` -> [{ name, bytes, pct }] (largest first), or undefined when the
+ * node does not carry the field (legacy raw files): stored values are then left alone.
+ */
+export function parseLanguages(conn) {
+  if (!conn || !Array.isArray(conn.edges)) return undefined;
+  const total = Number(conn.totalSize) || conn.edges.reduce((s, e) => s + (Number(e?.size) || 0), 0);
+  return conn.edges.filter((e) => e?.node?.name).map((e) => {
+    const bytes = Number(e.size) || 0;
+    return { name: e.node.name, bytes, pct: total > 0 ? Math.round((bytes * 1000) / total) / 10 : 0 };
+  }).sort((a, b) => b.bytes - a.bytes);
+}
+/** GraphQL `repositoryTopics{nodes{topic{name}}}` -> ['topic', …] (lowercase), or undefined when absent. */
+export function parseTopics(conn) {
+  if (!conn || !Array.isArray(conn.nodes)) return undefined;
+  return [...new Set(conn.nodes.map((n) => String(n?.topic?.name ?? '').trim().toLowerCase()).filter(Boolean))];
+}
 
 export function emptyByCategory() {
   return Object.fromEntries(CATEGORIES.map((k) => [k, 0]));
@@ -63,10 +82,14 @@ export function buildDocs(student, nodes) {
       comments: num(n.comments?.totalCount), reviews: num(n.reviews?.totalCount), stars,
       campus: student.campus ?? 'Unknown', batch: student.batch ?? null, active: student.active !== false,
     });
+    const languages = parseLanguages(r.languages);
+    const topics = parseTopics(r.repositoryTopics);
     repos.set(repoLc, {
       _id: repoLc, name: repo, owner, ownerLc, ownerType, stars, forks: num(r.forkCount),
       isFork: Boolean(r.isFork), isArchived: Boolean(r.isArchived), language: r.primaryLanguage?.name ?? null,
       license: r.licenseInfo?.spdxId ?? null, description: r.description ?? null,
+      // newer fetches carry the languages by size and the topics (SPEC addendum H); legacy nodes do not
+      ...(languages && { languages }), ...(topics && { topics }),
     });
     owners.set(ownerLc, { _id: ownerLc, login: owner, type: ownerType });
   }
@@ -164,6 +187,8 @@ export async function upsertPRs(db, student, nodes, { onlyUrls = null } = {}) {
   ]);
   await bulk(c.prs, prOps);
   if (drifted.length) await reclassify(db, { prFilter: { repoLc: { $in: drifted } }, repoFilter: null, ctx });
+  // technology domain of the repos just written (their language / topics / description may have changed)
+  await recomputeDomains(db, { filter: { _id: { $in: repoIds } } });
   return { prs: prs.length, repos: repos.size };
 }
 

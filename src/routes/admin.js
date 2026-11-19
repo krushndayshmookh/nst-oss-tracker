@@ -614,6 +614,18 @@ export function adminRouter({ db, config, auth, github = null }) {
     res.status(202).json({ job: { id: job._id } });
   });
 
+  // Repo metadata refresh (SPEC addendum H): languages, topics, stars of every stored repo; one at a time.
+  // {force?: bool} re-reads every repo; by default only repos not refreshed for 7 days (so a second run resumes).
+  r.post('/jobs/repo-meta', async (req, res) => {
+    if (req.body.force !== undefined && typeof req.body.force !== 'boolean') throw badRequest('force must be true or false');
+    const job = await syncLock(db, async () => {
+      const running = await c.jobs.findOne({ type: 'repoMeta', $or: [{ runner: 'app', status: { $in: ['queued', 'running'] } }, { runner: 'cli', status: 'running', startedAt: { $gte: new Date(Date.now() - 6 * 3600000) } }] });
+      if (running) throw new ApiError(409, 'conflict', `a repo metadata refresh is already ${running.status} (job ${running._id})`, { jobId: running._id });
+      return enqueue(db, 'repoMeta', { force: req.body.force === true, trigger: 'manual' });
+    });
+    res.status(202).json({ job: { id: job._id } });
+  });
+
   return r;
 }
 

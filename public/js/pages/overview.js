@@ -13,6 +13,7 @@ import {
 import {
   scaleOf, scaleToggle, campusYearTable, yearMetric, cohortLabel, campusColor, rate, pctVal, CAMPUS_SORT_DEFAULT, AXIS,
 } from './campus-common.js';
+import { techList, isWeb } from './tech-common.js';
 
 /** Campus × year series for the comparison chart in one scale. Unknown campus / year stay in the table only. */
 function campusSeries(campuses, scale) {
@@ -42,10 +43,13 @@ export default async function (el, ctx) {
   const meta = await getMeta();
   const range = rangeParams(ctx.query, meta);
   const cohort = clean({ campus: ctx.query.campus, year: ctx.query.year });
-  const [overview, campuses, activity] = await Promise.all([
+  const [overview, campuses, activity, techLang, techDomain] = await Promise.all([
     api.get('/overview', { ...cohort, ...range }),
     api.get('/campuses', range),
     hasRanges(meta) ? api.get('/activity', { ...cohort, ...range }).catch(() => null) : null,
+    // the "Top technologies" strip (SPEC addendum H); the page still renders when the endpoint is missing
+    api.get('/tech', { by: 'language', ...cohort, ...range }).catch(() => null),
+    api.get('/tech', { by: 'domain', ...cohort, ...range }).catch(() => null),
   ]);
   const charts = [];
   const canvas = () => h('canvas');
@@ -210,6 +214,20 @@ export default async function (el, ctx) {
           ],
         }))),
   );
+
+  // ── top technologies ──
+  if (techLang && techDomain && techLang.totals && techLang.totals.merged > 0) {
+    const t = techLang.totals;
+    const opts = { ctx, n: 5, text: (r) => fmt.num(r.merged), note: (r) => `${fmt.pct(r.merged, t.merged)} · ${fmt.num(r.mergedStudents)} students` };
+    const webShare = (data, by) => fmt.pct((data.rows || []).filter((r) => isWeb(by, r.key)).reduce((s, r) => s + r.merged, 0), t.merged);
+    put(el,
+      h('div', { class: 'section-head' }, h('h2', null, 'Top technologies'),
+        h('span', { class: 'muted' }, `Merged open-source pull requests by the project’s main language and technology area${scope ? `, ${scope}` : ''}. `,
+          h('a', { href: link('/tech', cohort, ctx) }, 'All technologies'))),
+      h('div', { class: 'grid grid-2' },
+        card({ title: 'Languages', note: `web languages ${webShare(techLang, 'language')} of merged` }, techList(techLang.rows || [], { ...opts, by: 'language' })),
+        card({ title: 'Technology areas', note: `web ${webShare(techDomain, 'domain')} of merged` }, techList(techDomain.rows || [], { ...opts, by: 'domain' }))));
+  }
 
   // ── composition ──
   const tierCanvas = canvas();

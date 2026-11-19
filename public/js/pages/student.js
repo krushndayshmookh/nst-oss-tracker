@@ -9,6 +9,7 @@ import { barChart } from '../lib/charts.js';
 import {
   getMeta, rangeParams, rangeControl, rangeLine, rangeSentence, cohortNodes, link, repoHref, studentName, prTable, fetchActivity, activityCard, put
 } from './common.js';
+import { techList } from './tech-common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -59,6 +60,19 @@ export default async function (el, ctx) {
           h('dt', null, 'Latest PR'), h('dd', null, fmt.date(st.lastPrAt)),
           h('dt', null, 'Latest merged open-source PR'), h('dd', null, fmt.date(st.lastOsMergedAt))),
         h('p', { class: 'card-note' }, h('a', { href: link('/about', {}, ctx) }, 'How categories work'))))));
+
+  // language / technology-area mix of everything the student sent in the period (SPEC addendum H)
+  const tech = data.tech || null;
+  if (tech && ((tech.language || []).length || (tech.domain || []).length)) {
+    const opts = { ctx, all: true, n: 6, value: (r) => r.prs, text: (r) => `${fmt.num(r.prs)} PRs`,
+      note: (r) => (r.osMerged ? `${fmt.num(r.osMerged)} merged open source` : `${fmt.num(r.merged)} merged`) };
+    put(el,
+      h('div', { class: 'section-head' }, h('h2', null, 'Technologies'),
+        h('span', { class: 'muted' }, 'Every pull request in the period, by its project’s main language and technology area. ', h('a', { href: link('/tech', {}, ctx) }, 'All students'))),
+      h('div', { class: 'grid grid-2' },
+        card({ title: 'Languages' }, techList(tech.language || [], { ...opts, by: 'language', empty: 'No pull requests in this period.' })),
+        card({ title: 'Technology areas' }, techList(tech.domain || [], { ...opts, by: 'domain', empty: 'No pull requests in this period.' }))));
+  }
 
   const strip = activityCard(activity, ctx, { card, calendarHeatmap, linkQuery: { author: s.username } });
   if (strip) put(el, strip.el);

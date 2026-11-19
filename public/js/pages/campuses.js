@@ -14,6 +14,7 @@ import {
   scaleOf, scaleToggle, unknownToggle, rate, pctVal, smallMark, campusYearTable, campusCsv, downloadButton, CAMPUS_SORT_DEFAULT,
   campusMonthSeries, funnelMatrix, tierMixBlock, categoryMixBlock, yearBars, yearMetric, distributionTable, spreadKey, deltaLine,
 } from './campus-common.js';
+import { campusTechBlock } from './tech-common.js';
 
 /** One campus of the scorecard row. `max` holds the largest value of each bar among the campuses shown. */
 function scorecard(c, t, { ctx, max, previousRange, below }) {
@@ -60,9 +61,10 @@ export default async function (el, ctx) {
   const meta = await getMeta();
   const q = ctx.query;
   const range = rangeParams(q, meta);
-  const [data, activity] = await Promise.all([
+  const [data, activity, tech] = await Promise.all([
     api.get('/campuses', range),
     hasRanges(meta) ? api.get('/activity', { ...range }).catch(() => null) : null,
+    api.get('/tech', { by: 'domain', ...range }).catch(() => null), // tech mix per campus (SPEC addendum H)
   ]);
   const scale = scaleOf(q);
   const rateMode = scale !== 'raw';
@@ -152,7 +154,13 @@ export default async function (el, ctx) {
         categoryMixBlock(groups, { scale, below, hrefOf: campusHref }),
         h('p', { class: 'card-note' },
           scale === 'share' ? 'Each bar is 100% of the pull requests the campus’s students opened. ' : scale === 'per100' ? 'Bar length is pull requests opened per 100 tracked students. ' : 'Bar length is the number of pull requests opened. ',
-          'Only the open-source part counts towards the headline. ', h('a', { href: link('/about', {}, ctx) }, 'How categories work')))));
+          'Only the open-source part counts towards the headline. ', h('a', { href: link('/about', {}, ctx) }, 'How categories work')))),
+    tech && tech.totals && tech.totals.merged > 0 ? card({ title: 'Merged open-source PRs by technology area' },
+      campusTechBlock(tech, { scale, ctx, showUnknown, hrefOf: (c) => (c.campus === 'Unknown' ? null : link(`/campuses/${encodeURIComponent(c.campus)}`, {}, ctx)) }),
+      h('p', { class: 'card-note' },
+        scale === 'share' ? 'Each bar is 100% of the campus’s merged open-source pull requests. ' : scale === 'per100' ? 'Bar length is merged open-source pull requests per 100 tracked students. ' : 'Bar length is the number of merged open-source pull requests. ',
+        'The five areas with the most merged work overall get a colour; the rest is grey. ',
+        h('a', { href: link('/tech', { by: 'domain' }, ctx) }, 'Technologies in detail'))) : null);
 
   // ── 5. the table ──
   const sort = q.sort || CAMPUS_SORT_DEFAULT;

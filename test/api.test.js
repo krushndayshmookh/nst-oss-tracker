@@ -183,7 +183,7 @@ test('students list + profile', async () => {
   assert.equal((await app.get('/api/students?q=.*')).body.total, 0, 'q is a literal substring, not a regex');
 
   const prof = (await app.get('/api/students/ALICE')).body;
-  assert.deepEqual(Object.keys(prof), ['range', 'student', 'monthly', 'repos', 'prs']);
+  assert.deepEqual(Object.keys(prof), ['range', 'student', 'monthly', 'repos', 'prs', 'tech']); // tech: SPEC addendum H
   assert.equal(prof.student.username, 'Alice');
   assert.equal(prof.range.preset, 'ay');
   assert.equal(prof.monthly.reduce((a, m) => a + m.allOpened, 0), 7);
@@ -232,7 +232,8 @@ test('repos and orgs', async () => {
   const repos = (await app.get('/api/repos')).body;
   assert.deepEqual(repos.items.map((r) => r.name), ['apache/airflow', 'midorg/tool']);
   assert.deepEqual(Object.keys(repos.items[0]), ['name', 'owner', 'ownerType', 'stars', 'forks', 'language', 'license', 'description', 'isFork', 'isArchived',
-    'category', 'tier', 'reason', 'override', 'overrideNote', 'stats']);
+    'category', 'tier', 'reason', 'override', 'overrideNote',
+    'languages', 'topics', 'domain', 'domainLabel', 'domainReason', 'metaFetchedAt', 'metaStatus', 'stats']); // technology fields: SPEC addendum H
   assert.deepEqual(Object.keys(repos.items[0].stats), ['prs', 'merged', 'open', 'closed', 'students', 'campuses', 'firstPrAt', 'lastPrAt']);
   assert.equal((await app.get('/api/repos?category=all')).body.total, 7);
   assert.deepEqual((await app.get('/api/repos?category=all&q=PORTAL')).body.items.map((r) => r.name), ['nst-sdc/portal']);
@@ -254,7 +255,7 @@ test('repos and orgs', async () => {
   assert.equal((await app.get('/api/orgs?category=all')).body.total, 7);
   assert.deepEqual((await app.get('/api/orgs?category=all&q=NST')).body.items.map((o) => o.login), ['nst-sdc']);
   const org = (await app.get('/api/orgs/Apache')).body;
-  assert.deepEqual(Object.keys(org), ['range', 'org', 'repos', 'students']);
+  assert.deepEqual(Object.keys(org), ['range', 'org', 'repos', 'students', 'tech']); // tech: SPEC addendum H
   assert.deepEqual([org.org.login, org.repos.length, org.students.length], ['apache', 1, 2]);
   assert.equal((await app.get('/api/orgs/nobody')).status, 404);
 });

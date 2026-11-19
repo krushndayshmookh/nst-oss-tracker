@@ -790,3 +790,24 @@ dialog.dialog::backdrop { background: rgb(8 20 17 / 0.5); }
 /* Admin → Rules → Academic year: earlier years, each with a Remove button */
 .ay-history { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .ay-history li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Technologies (SPEC addendum H): mixes take the five categorical slots and the grey "everything else";
+   the campus × technology table marks each figure with a heat swatch from the same ramp as the activity heatmaps. */
+.tech-s1 { --cat-color: var(--chart-1); }
+.tech-s2 { --cat-color: var(--chart-2); }
+.tech-s3 { --cat-color: var(--chart-3); }
+.tech-s4 { --cat-color: var(--chart-4); }
+.tech-s5 { --cat-color: var(--chart-5); }
+.tech-rest { --cat-color: var(--chart-other); }
+.legend .tech-s1 .swatch, .legend .tech-s2 .swatch, .legend .tech-s3 .swatch, .legend .tech-s4 .swatch, .legend .tech-s5 .swatch, .legend .tech-rest .swatch { background: var(--cat-color); }
+.techbar { align-items: center; gap: var(--s-2) var(--s-3); }
+.techbar-note { font-size: var(--fs-sm); }
+.heatcell { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.heatcell > i { width: 12px; height: 12px; border-radius: 2px; flex: none; }
+.th-sub { display: block; font-weight: 400; font-size: var(--fs-xs); color: var(--ink-3); }
+.hbars-tech { grid-template-columns: minmax(6em, 11em) minmax(48px, 1fr) minmax(4.5em, max-content); }
+.hbars-tech dt a { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toprepos { font-size: var(--fs-sm); }
+.topics { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.topics li { padding: 0 6px; border: 1px solid var(--rule); border-radius: var(--radius-sm); font-size: var(--fs-xs); color: var(--ink-2); }
+@media (forced-colors: active) { .heatcell > i { forced-color-adjust: none; } }

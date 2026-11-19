@@ -26,13 +26,16 @@ const PAGE_PAUSE_MS = 300;
 const REQUEST_TIMEOUT_MS = 90_000;
 const MAX_RATE_SLEEP_MS = 65 * 60 * 1000;
 
-// Same fields as legacy/fetch_prs.py, plus updatedAt, the PR's databaseId (stable across repo renames) and the author's login / databaseId.
+// Same fields as legacy/fetch_prs.py, plus updatedAt, the PR's databaseId (stable across repo renames), the author's login / databaseId
+// and the repository's top languages by size and topics (SPEC addendum H: the nightly sync keeps them fresh).
 export const PR_FIELDS = `issueCount pageInfo{hasNextPage endCursor}
  nodes{... on PullRequest{databaseId url number title state isDraft createdAt updatedAt mergedAt closedAt additions deletions changedFiles
   author{login ... on User{databaseId}}
   comments{totalCount} reviews{totalCount}
   repository{nameWithOwner isFork isArchived isPrivate stargazerCount forkCount description createdAt
-   owner{login __typename} primaryLanguage{name} licenseInfo{spdxId}}}}`;
+   owner{login __typename} primaryLanguage{name} licenseInfo{spdxId}
+   languages(first:5, orderBy:{field:SIZE, direction:DESC}){totalSize edges{size node{name}}}
+   repositoryTopics(first:10){nodes{topic{name}}}}}}`;
 
 export const SEARCH_QUERY = `query($q: String!, $first: Int!, $after: String) {
  s: search(query: $q, type: ISSUE, first: $first, after: $after) {${PR_FIELDS}}
@@ -129,7 +132,7 @@ export async function gql(query, variables = {}, opts = {}) {
 }
 
 /** Sleeps until the GraphQL rate limit resets when fewer than RATE_LIMIT_FLOOR points remain. */
-async function respectRateLimit(rl, o) {
+export async function respectRateLimit(rl, o) {
   if (!rl || !Number.isFinite(rl.remaining) || rl.remaining >= RATE_LIMIT_FLOOR) return;
   const reset = rl.resetAt ? new Date(rl.resetAt).getTime() : NaN;
   const wait = Number.isFinite(reset)

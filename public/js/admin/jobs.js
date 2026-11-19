@@ -7,12 +7,13 @@ import { h, pageHead, filterBar, table, pagination, card, stateBadge, modal, con
 import { act, poll, errorText, handleAuthError, fetchErrorText } from './common.js';
 import { scheduledFetch } from './schedule.js';
 
-const TYPE_LABELS = { sync: 'Sync', backfill: 'History fetch', reclassify: 'Reclassify', import: 'Import' };
+const TYPE_LABELS = { sync: 'Sync', backfill: 'History fetch', reclassify: 'Reclassify', import: 'Import', repoMeta: 'Repo metadata' };
 const TYPE_HELP = {
   sync: 'Fetches pull requests that are new or changed since each student was last synced.',
   backfill: 'Fetches a student’s whole pull-request history.',
   reclassify: 'Sorts every stored pull request into categories again and recomputes the totals.',
   import: 'Loads the original spreadsheet data.',
+  repoMeta: 'Reads stars, languages and topics of every stored project from GitHub and recomputes their technology areas.',
 };
 const RUNNER_LABELS = { app: 'App', cli: 'Script' };
 const LIVE = new Set(['queued', 'running']);
@@ -43,11 +44,20 @@ function resultText(job) {
   const s = job.summary;
   if (job.status === 'cancelled' && (!s || typeof s !== 'object')) return 'Cancelled before it started';
   if (!s || typeof s !== 'object') return job.status === 'done' ? 'Finished' : null;
-  if ('ok' in s || 'failed' in s) {
+  if (job.type !== 'repoMeta' && ('ok' in s || 'failed' in s)) {
     const bits = [`${fmt.num(s.ok ?? 0)} ok`, `${fmt.num(s.failed ?? 0)} failed`, `${fmt.num(s.prs ?? 0)} PRs`];
     if (job.status === 'cancelled') bits.unshift('Cancelled, what was fetched is kept');
     if (s.renamed) bits.push(`${fmt.num(s.renamed)} renamed`);
     if (s.notFound) bits.push(`${fmt.num(s.notFound)} not found on GitHub`);
+    return bits.join(', ');
+  }
+  if (job.type === 'repoMeta' && 'repos' in s) {
+    const bits = [`${fmt.num(s.ok ?? 0)} of ${fmt.num(s.repos)} projects refreshed`];
+    if (job.status === 'cancelled') bits.unshift('Cancelled, what was read is kept');
+    if (s.renamed) bits.push(`${fmt.num(s.renamed)} renamed`);
+    if (s.missing) bits.push(`${fmt.num(s.missing)} gone from GitHub`);
+    if (s.private) bits.push(`${fmt.num(s.private)} now private`);
+    if (s.failed) bits.push(`${fmt.num(s.failed)} failed (retried next run)`);
     return bits.join(', ');
   }
   if (job.type === 'import' && 'students' in s) return `${fmt.num(s.students)} students, ${fmt.num(s.prs ?? 0)} PRs imported`;
@@ -124,6 +134,17 @@ async function reclassify(btn) {
   refresh();
 }
 
+async function refreshRepoMeta(btn) {
+  const ok = await confirmDialog(
+    'Read the metadata of every stored project from GitHub again? Stars, main language, languages by size and topics are refreshed, then technology areas and totals are recomputed. Projects refreshed in the last 7 days are skipped, so running it again after a stop continues where it left off. About 40 projects per request: a few minutes for the whole list.',
+    { title: 'Refresh repo metadata', confirmLabel: 'Refresh' });
+  if (!ok) return;
+  const res = await act(() => api.post('/admin/jobs/repo-meta', {}), { button: btn });
+  if (!res) return;
+  toast('Started refreshing the project metadata.');
+  refresh();
+}
+
 /* ───────────── page ───────────── */
 
 function jobsTable(data, show) {
@@ -167,11 +188,13 @@ export default async function (el, ctx) {
 
   const reclassifyBtn = h('button', { type: 'button', class: 'btn', name: 'reclassify' }, 'Reclassify');
   reclassifyBtn.addEventListener('click', () => reclassify(reclassifyBtn));
+  const metaBtn = h('button', { type: 'button', class: 'btn', name: 'repo-meta', title: TYPE_HELP.repoMeta }, 'Refresh repo metadata');
+  metaBtn.addEventListener('click', () => refreshRepoMeta(metaBtn));
   el.append(
     pageHead({
       title: 'Jobs',
       lede: 'Fetches from GitHub and recomputations, newest first. New work is fetched every night; start one here when you cannot wait.',
-      actions: [reclassifyBtn],
+      actions: [metaBtn, reclassifyBtn],
     }),
     scheduled.el,
     status,

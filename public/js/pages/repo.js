@@ -5,6 +5,7 @@ import { setQuery } from '../lib/router.js';
 import { h, pageHead, statCard, card, pagination, badge, categoryBadge, overrideBadge, calendarHeatmap, fmt, CATEGORY_HELP } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
 import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, link, orgHref, campusList, prTable, contributorsTable, fetchActivity, activityCard, put } from './common.js';
+import { techHref } from './tech-common.js';
 
 export default async function (el, ctx) {
   const meta = await getMeta();
@@ -39,7 +40,8 @@ export default async function (el, ctx) {
       categoryBadge(repo.category, repo.tier),
       repo.override ? overrideBadge(repo.override, repo.overrideNote) : null,
       h('span', { class: 'muted' }, `${fmt.num(repo.stars)} stars`),
-      repo.language ? h('span', { class: 'muted' }, repo.language) : null,
+      repo.language ? h('a', { class: 'muted', href: techHref('language', repo.language, ctx, { all: !counted }), title: 'Projects with this main language' }, repo.language) : null,
+      repo.domain ? h('a', { class: 'muted', href: techHref('domain', repo.domain, ctx, { all: !counted }), title: repo.domainReason ? `Technology area, set by ${repo.domainReason}` : 'Technology area' }, repo.domainLabel) : null,
       repo.license ? h('span', { class: 'muted' }, repo.license) : null,
       repo.isFork ? badge('Fork') : null,
       repo.isArchived ? badge('Archived', 'warn') : null,
@@ -51,6 +53,16 @@ export default async function (el, ctx) {
       statCard({ label: 'Closed without merging', value: repo.stats.closed }),
       statCard({ label: 'First PR', value: fmt.date(repo.stats.firstPrAt), sub: repo.stats.lastPrAt ? `latest ${fmt.rel(repo.stats.lastPrAt)}` : null })),
   );
+
+  // languages by size and GitHub topics arrive with the repo metadata refresh (SPEC addendum H)
+  const langs = (repo.languages || []).filter((l) => l.pct === null || l.pct >= 1);
+  if (langs.length > 1 || (repo.topics || []).length) {
+    put(el, card({ title: 'Technology', note: repo.domainReason ? `Area: ${repo.domainLabel}` : null },
+      h('dl', { class: 'facts' },
+        langs.length ? [h('dt', null, 'Languages'), h('dd', null, langs.map((l) => `${l.name}${l.pct !== null ? ` ${l.pct}%` : ''}`).join(' · '))] : null,
+        (repo.topics || []).length ? [h('dt', null, 'Topics'), h('dd', null, h('ul', { class: 'topics' }, repo.topics.map((t) => h('li', null, t))))] : null,
+        repo.domainReason ? [h('dt', null, 'Area decided by'), h('dd', null, repo.domainReason)] : null)));
+  }
 
   const strip = activityCard(activity, ctx, { card, calendarHeatmap, linkQuery: { repo: repo.name, category: 'all' } });
   if (strip) put(el, strip.el);
