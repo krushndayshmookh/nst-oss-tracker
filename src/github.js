@@ -8,6 +8,14 @@
 
 export const GRAPHQL_URL = 'https://api.github.com/graphql';
 export const REST_URL = 'https://api.github.com';
+/**
+ * Base URL of the GitHub API. GITHUB_API_URL overrides it (GitHub Enterprise, or a local fake server in
+ * integration tests): REST calls go to `<base>/...`, GraphQL to `<base>/graphql`. Read at call time.
+ */
+export function apiBase() {
+  const v = String(process.env.GITHUB_API_URL ?? '').trim().replace(/\/+$/, '');
+  return v || REST_URL;
+}
 export const USER_AGENT = 'nst-oss-status';
 
 export const PAGE_SIZES = [50, 20, 8, 3]; // GitHub answers 502 when a query is too heavy: pages shrink on failure
@@ -78,7 +86,7 @@ export async function gql(query, variables = {}, opts = {}) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     let res;
     try {
-      res = await o.fetch(GRAPHQL_URL, {
+      res = await o.fetch(`${apiBase()}/graphql`, {
         method: 'POST', body, headers: headers(o, { 'Content-Type': 'application/json' }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
@@ -222,7 +230,7 @@ async function restUser(path, opts) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     let res;
     try {
-      res = await o.fetch(`${REST_URL}${path}`, {
+      res = await o.fetch(`${apiBase()}${path}`, {
         headers: headers(o, { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }),
         signal: AbortSignal.timeout(30_000),
       });

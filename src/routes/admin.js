@@ -85,6 +85,8 @@ export function adminRouter({ db, config, auth, github = null }) {
   r.use(auth.requireConfigured);
   r.use(auth.requireCsrfHeader);
   r.use((req, res, next) => {
+    // A POST without any body (curl -X POST …/backfill, /logout) is treated as {}.
+    if (!['GET', 'HEAD', 'DELETE'].includes(req.method) && req.body === undefined && !Number(req.headers['content-length'] || 0)) req.body = {};
     if (!['GET', 'HEAD', 'DELETE'].includes(req.method) && (req.body === undefined || req.body === null || typeof req.body !== 'object' || Array.isArray(req.body))) {
       return next(badRequest('a JSON object body is required (Content-Type: application/json)'));
     }

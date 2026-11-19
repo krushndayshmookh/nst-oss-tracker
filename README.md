@@ -29,6 +29,7 @@ All configuration is by environment variable. `.env.example` lists every variabl
 | `ADMIN_PASSWORD` | unset | admin password. While unset, the admin API answers 503 |
 | `SESSION_SECRET` | random per process | signs the admin cookie. Set it, or sessions end at every restart |
 | `GITHUB_TOKEN` | unset | needed by sync, backfill and "add student" validation. Public read access is enough |
+| `GITHUB_API_URL` | `https://api.github.com` | optional API base (GraphQL at `<base>/graphql`); for GitHub Enterprise or a local fake server in tests |
 | `NODE_ENV` | `development` | `production` makes the admin cookie `Secure` |
 | `SYNC_CONCURRENCY` | `6` | students fetched in parallel |
 | `TRUST_PROXY` | `1` | number of reverse proxies in front of the app |

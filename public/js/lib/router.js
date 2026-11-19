@@ -191,7 +191,8 @@ async function render() {
     if (!match) pageEl.append(notFound(path));
     else cleanup = await resolvePage(match, pageEl, ctx);
   } catch (err) {
-    console.error(err);
+    // an expected API answer (404 for an unknown student, 400 for a bad filter) is shown in the page, not logged
+    if (!(err && err.status >= 400 && err.status < 500)) console.error(err);
     failed = err;
   }
 

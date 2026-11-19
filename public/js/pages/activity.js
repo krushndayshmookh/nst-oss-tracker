@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, filterBar, statCard, card, calendarHeatmap, heatGrid, fmt } from '../lib/ui.js';
 import { lineChart, barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeSentence, link, categoryOptions, opts, clean, WEEKDAYS, put } from './common.js';
+import { getMeta, hasRanges, rangeParams, rangeControl, rangeSentence, link, categoryOptions, opts, clean, WEEKDAYS, put } from './common.js';
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
@@ -15,6 +15,8 @@ export default async function (el, ctx) {
   const filters = clean({ campus: q.campus, year: q.year, category: q.category, author: q.author, repo: q.repo, owner: q.owner, ...rangeParams(q, meta) });
   let a;
   try {
+    // A server without date ranges (no presets in /api/meta) has no /api/activity either: do not ask for it.
+    if (!hasRanges(meta)) throw new ApiError(404, 'not_found', 'activity analytics are not available');
     a = await api.get('/activity', { ...filters, metric });
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 404) throw err;
