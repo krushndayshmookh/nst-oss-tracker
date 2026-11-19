@@ -10,17 +10,16 @@ import { act, decide, headline, headlineDelta, plural } from './common.js';
 const OWNER_STATE = { include: 'included', exclude: 'excluded', nst_internal: 'marked NST internal' };
 
 async function apply({ ask, post, done, button }) {
-  const before = headline(); // read while the admin is typing the note
+  const reading = headline(); // read the public totals while the admin is typing the note
+  let note = '';
   if (ask) {
-    const note = await ask();
+    note = await ask();
     if (note === false) return;
-    post = post.bind(null, note);
-  } else {
-    post = post.bind(null, '');
   }
-  const res = await act(post, { button });
+  const before = await reading; // must be complete before the change is sent
+  const res = await act(() => post(note), { button });
   if (!res) return;
-  toast(done(res) + headlineDelta(await before, await headline()));
+  toast(done(res) + headlineDelta(before, await headline()));
   refresh();
 }
 
@@ -151,5 +150,5 @@ export function decisionButtons({ options, current, onPick, name }) {
     clear.addEventListener('click', () => onPick(null, clear));
     buttons.push(clear);
   }
-  return h('div', { class: 'btn-group' }, buttons);
+  return h('div', { class: 'btn-group', style: { flexWrap: 'nowrap' } }, buttons);
 }

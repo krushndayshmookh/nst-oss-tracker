@@ -7,7 +7,7 @@ import {
   h, pageHead, filterBar, table, pagination, card, badge, stateBadge, ghLink, modal, confirmDialog, toast, fmt,
 } from '../lib/ui.js';
 import {
-  CAMPUSES, YEARS, act, field, batchOptions, getMeta, headline, headlineDelta, jobLink, poll, plural, errorText, handleAuthError,
+  CAMPUSES, YEARS, act, field, batchOptions, getMeta, headline, headlineDelta, jobLink, poll, plural, errorText, handleAuthError, fetchErrorText,
 } from './common.js';
 
 const BACKFILL_LABELS = { pending: 'Pending', running: 'Running', done: 'Done', error: 'Failed' };
@@ -314,7 +314,7 @@ function openEdit(s) {
 
 function backfillText(s) {
   const b = s.backfill || {};
-  if (b.status === 'error') return b.error === 'not_found' ? 'GitHub user not found' : `Failed: ${b.error || 'unknown error'}`;
+  if (b.status === 'error') return b.error === 'not_found' ? 'GitHub user not found' : `Failed: ${fetchErrorText(b.error)}`;
   return `${BACKFILL_LABELS[b.status] || b.status}${b.at ? `, ${fmt.rel(b.at)}` : ''}`;
 }
 
@@ -408,24 +408,30 @@ function studentsTable(data, q) {
           Array.isArray(s.missing) && s.missing.length
             ? h('div', { class: 'sub' }, s.missing.map((k) => [badge(MISSING_LABELS[k] || k, 'warn'), ' '])) : null),
       },
-      { key: 'campus', label: 'Campus' },
-      { key: 'batch', label: 'Batch', render: (s) => (s.batch ? h('span', { title: s.year }, String(s.batch)) : null) },
-      { key: 'email', label: 'Email', class: 'cell-clip' },
-      { key: 'enrolmentNo', label: 'Enrolment no.' },
       {
-        key: 'backfill', label: 'Backfill', title: 'The fetch of this student’s full pull-request history',
+        key: 'campus', label: 'Campus · batch',
+        render: (s) => h('div', null, s.campus, h('div', { class: 'sub' }, s.batch ? `${s.batch} · ${s.year}` : 'No batch')),
+      },
+      {
+        key: 'email', label: 'Email · enrolment no.',
+        render: (s) => (s.email || s.enrolmentNo
+          ? h('div', null, s.email ? h('span', { class: 'cell-clip', title: s.email }, s.email) : h('span', { class: 'muted' }, 'No email'), h('div', { class: 'sub' }, s.enrolmentNo || 'No enrolment no.'))
+          : null),
+      },
+      {
+        key: 'backfill', label: 'Backfill · last sync', title: 'The fetch of this student’s full pull-request history',
         render: (s) => {
           const b = s.backfill || {};
-          if (b.status !== 'error') return stateBadge(b.status);
+          const synced = h('div', { class: 'sub', title: s.lastSyncedAt ? `Last synced ${fmt.datetime(s.lastSyncedAt)}` : null },
+            s.lastSyncedAt ? `Synced ${fmt.rel(s.lastSyncedAt)}` : 'Never synced');
+          if (b.status !== 'error') return h('div', null, stateBadge(b.status), synced);
           const notFound = b.error === 'not_found';
-          return h('div', { title: notFound ? 'GitHub has no user with this username' : b.error || '' },
+          return h('div', { title: `${fetchErrorText(b.error)}${notFound ? '' : `\n${b.error || ''}`}` },
             stateBadge('error', notFound ? 'GitHub user not found' : 'Failed'),
-            !notFound && b.error ? h('div', { class: 'sub cell-clip' }, b.error) : null);
+            notFound ? synced : h('div', { class: 'sub cell-clip' }, fetchErrorText(b.error)));
         },
       },
-      { key: 'lastSyncedAt', label: 'Last synced', class: 'nowrap', render: (s) => (s.lastSyncedAt ? h('span', { title: fmt.datetime(s.lastSyncedAt) }, fmt.rel(s.lastSyncedAt)) : 'Never') },
-      { key: 'osMerged', label: 'Merged open-source', num: true, sortable: true, title: 'Merged open-source pull requests, all time', render: (s) => fmt.num(s.stats.osMerged) },
-      { key: 'addedAt', label: 'Added', sortable: true, num: true, render: (s) => fmt.date(s.addedAt) },
+      { key: 'osMerged', label: 'OS merged', num: true, sortable: true, title: 'Merged open-source pull requests, all time', render: (s) => fmt.num(s.stats.osMerged) },
       {
         key: 'actions', label: 'Actions',
         render: (s) => {
@@ -440,7 +446,7 @@ function studentsTable(data, q) {
             ? h('button', { type: 'button', class: 'btn btn-sm btn-danger', name: `deactivate-${s.username}` }, 'Deactivate')
             : h('button', { type: 'button', class: 'btn btn-sm', name: `reactivate-${s.username}` }, 'Reactivate');
           toggle.addEventListener('click', () => (s.active ? deactivate(s, toggle) : reactivate(s, toggle)));
-          return h('div', { class: 'btn-group' }, edit, fetchBtn, toggle);
+          return h('div', { class: 'btn-group', style: { flexWrap: 'nowrap' } }, edit, fetchBtn, toggle);
         },
       },
     ],
@@ -479,9 +485,13 @@ export default async function (el, ctx) {
         { name: 'batch', label: 'Batch', type: 'select', options: (meta.batches || []).map(String) },
         { name: 'active', label: 'Status', type: 'select', options: [{ value: '1', label: 'Active' }, { value: '0', label: 'Inactive' }] },
         { name: 'backfill', label: 'Backfill', type: 'select', options: Object.entries(BACKFILL_LABELS).map(([value, label]) => ({ value, label })) },
+        {
+          name: 'sort', label: 'Sort by', type: 'select', allLabel: 'Newest added',
+          options: [{ value: 'name', label: 'Name' }, { value: 'username', label: 'Username' }, { value: 'osMerged', label: 'Merged open-source PRs' }],
+        },
       ],
       values: q,
-      onChange: (v) => setQuery({ ...v, page: '' }),
+      onChange: (v) => setQuery({ ...v, order: v.sort === (q.sort || '') ? q.order : '', page: '' }),
     }),
     ...[missingBar(data, q)].filter(Boolean),
     list);

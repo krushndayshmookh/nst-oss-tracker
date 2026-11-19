@@ -133,7 +133,7 @@ export function field({ label, name, type = 'text', value = '', options = null, 
   if (hintId) input.setAttribute('aria-describedby', hintId);
   const error = h('div', { class: 'field-error', id: errId, role: 'alert', hidden: true });
   const row = type === 'checkbox'
-    ? h('div', { class: 'form-row' }, h('div', { class: 'form-row-inline' }, input, h('label', { for: id }, label)),
+    ? h('div', { class: 'form-row' }, h('div', { class: 'form-row form-row-inline' }, input, h('label', { for: id }, label)),
       hint ? h('div', { class: 'hint', id: hintId }, hint) : null, error)
     : h('div', { class: 'form-row' }, h('label', { for: id }, label), input,
       hint ? h('div', { class: 'hint', id: hintId }, hint) : null, error);
@@ -196,4 +196,24 @@ export function poll(fn, ms = 5000) {
     try { await fn(); } catch (err) { if (!handleAuthError(err)) console.error(err); } finally { busy = false; }
   }, ms);
   return () => { stopped = true; clearInterval(timer); };
+}
+
+/**
+ * A stored fetch error in words an admin can act on. The fetcher stores GitHub's own message, sometimes as JSON.
+ * `not_found` is the fetcher's marker for a username GitHub does not know.
+ */
+export function fetchErrorText(error) {
+  let text = String(error || '').trim();
+  if (!text) return 'Unknown error';
+  if (text === 'not_found') return 'GitHub has no user with this username';
+  try {
+    const parsed = JSON.parse(text);
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    const messages = list.map((e) => (e && typeof e === 'object' ? e.message : e)).filter(Boolean);
+    if (messages.length) text = messages.join('; ');
+  } catch { /* plain text */ }
+  if (/bad credentials|GITHUB_TOKEN|\b401\b|no token/i.test(text)) return 'GitHub did not accept this server’s access token, or none is set (GITHUB_TOKEN)';
+  if (/fetch failed|ENOTFOUND|ECONN|EAI_AGAIN|ETIMEDOUT|network|socket/i.test(text)) return 'GitHub could not be reached from this server';
+  if (/rate limit/i.test(text)) return 'GitHub rate limit reached; the next sync retries';
+  return text;
 }

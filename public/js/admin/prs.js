@@ -51,7 +51,8 @@ export default async function (el, ctx) {
         columns: [
           {
             key: 'title', label: 'Pull request', wrap: true,
-            render: (p) => h('div', null, extLink(p.title || `#${p.number}`, p.url), h('div', { class: 'sub' }, `${p.repo}#${p.number}`)),
+            render: (p) => h('div', null, extLink(p.title || `#${p.number}`, p.url),
+              h('div', { class: 'sub' }, stateBadge(p.isDraft && p.state === 'open' ? 'draft' : p.state), ` · #${p.number}`)),
           },
           {
             key: 'author', label: 'Student',
@@ -61,9 +62,8 @@ export default async function (el, ctx) {
             key: 'stars', label: 'Repository', sortable: true,
             render: (p) => h('div', null, ghLink(p.repo), h('div', { class: 'sub' }, `${fmt.compact(p.stars)} stars · ${p.ownerType === 'User' ? 'personal' : 'organisation'}`)),
           },
-          { key: 'state', label: 'State', render: (p) => stateBadge(p.isDraft && p.state === 'open' ? 'draft' : p.state) },
           {
-            key: 'category', label: 'Category',
+            key: 'category', label: 'Category', wrap: true,
             render: (p) => h('div', null, categoryBadge(p.category, p.tier),
               p.category !== 'open_source' && p.reason && !p.override ? h('div', { class: 'sub' }, `Not counted: ${p.reason.replace(/^admin: /, 'admin, ')}`) : null,
               p.category === 'open_source' && /^admin/.test(p.reason || '') && !p.override ? h('div', { class: 'sub' }, p.reason.replace(/^admin: /, 'Admin: ')) : null,

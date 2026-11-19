@@ -4,7 +4,7 @@
 import { api } from '../lib/api.js';
 import { setQuery, refresh } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, stateBadge, modal, confirmDialog, toast, loading, fmt } from '../lib/ui.js';
-import { act, field, poll, errorText, handleAuthError } from './common.js';
+import { act, field, poll, errorText, handleAuthError, fetchErrorText } from './common.js';
 
 const TYPE_LABELS = { sync: 'Sync', backfill: 'History fetch', reclassify: 'Reclassify', import: 'Import' };
 const TYPE_HELP = {
@@ -13,7 +13,7 @@ const TYPE_HELP = {
   reclassify: 'Sorts every stored pull request into categories again and recomputes the totals.',
   import: 'Loads the original spreadsheet data.',
 };
-const RUNNER_LABELS = { app: 'App', cli: 'Scheduled' };
+const RUNNER_LABELS = { app: 'App', cli: 'Scheduled or script' };
 const LIVE = new Set(['queued', 'running']);
 
 function duration(job) {
@@ -36,7 +36,7 @@ function scope(job) {
 
 /** The summary in words. Unknown shapes fall back to "key value" pairs of whatever numbers are there. */
 function resultText(job) {
-  if (job.status === 'error') return `Failed: ${job.error || 'unknown error'}`;
+  if (job.status === 'error') return `Failed: ${fetchErrorText(job.error)}`;
   const s = job.summary;
   if (!s || typeof s !== 'object') return job.status === 'done' ? 'Finished' : null;
   if ('ok' in s || 'failed' in s) {
@@ -45,6 +45,7 @@ function resultText(job) {
     if (s.notFound) bits.push(`${fmt.num(s.notFound)} not found on GitHub`);
     return bits.join(', ');
   }
+  if (job.type === 'import' && 'students' in s) return `${fmt.num(s.students)} students, ${fmt.num(s.prs ?? 0)} PRs imported`;
   if ('prsChanged' in s) return `${fmt.num(s.prsChanged)} of ${fmt.num(s.prs ?? 0)} PRs and ${fmt.num(s.reposChanged ?? 0)} of ${fmt.num(s.repos ?? 0)} repos changed`;
   const nums = Object.entries(s).filter(([, v]) => typeof v === 'number').slice(0, 4);
   return nums.length ? nums.map(([k, v]) => `${fmt.num(v)} ${k}`).join(', ') : 'Finished';
@@ -216,14 +217,9 @@ export default async function (el, ctx) {
     }),
     list);
 
-  let dialog = q.job ? show(q.job) : null;
+  if (q.job) show(q.job);
 
-  // Poll while anything is live. Keep polling a little after the last live job so a job queued elsewhere shows up.
-  let idle = 0;
-  const stop = poll(async () => {
-    const d = await api.get('/admin/jobs', params);
-    render(d);
-    idle = d.items.some((j) => LIVE.has(j.status)) ? 0 : idle + 1;
-  }, 5000);
-  return () => { stop(); if (dialog) { dialog.close(); dialog = null; } };
+  // Re-read the list in place every 5 s: quick while something is live, and it also picks up jobs started elsewhere
+  // (the nightly run, a history fetch queued from Students).
+  return poll(async () => render(await api.get('/admin/jobs', params)), 5000);
 }

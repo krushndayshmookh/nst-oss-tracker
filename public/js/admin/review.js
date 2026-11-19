@@ -4,7 +4,7 @@
 import { api } from '../lib/api.js';
 import { setQuery, href } from '../lib/router.js';
 import {
-  h, pageHead, filterBar, table, pagination, card, tabs, badge, categoryBadge, overrideBadge, ghLink, fmt, CATEGORIES, CATEGORY_LABELS,
+  h, pageHead, filterBar, table, pagination, card, tabs, badge, categoryBadge, categoryBar, overrideBadge, ghLink, fmt, CATEGORIES, CATEGORY_LABELS,
 } from '../lib/ui.js';
 import { decideRepo, decideOwner, decisionButtons } from './decisions.js';
 
@@ -106,6 +106,7 @@ async function ownersTab(q) {
           { key: 'osPrs', label: 'Open-source PRs', num: true, sortable: true, render: (o) => fmt.num(o.stats.osPrs) },
           { key: 'students', label: 'Students', num: true, sortable: true, render: (o) => fmt.num(o.stats.students) },
           { key: 'maxStars', label: 'Top stars', num: true, title: 'Stars of their most-starred repository', render: (o) => fmt.num(o.stats.maxStars) },
+          { key: 'mix', label: 'Currently', title: 'How their pull requests are categorised now', width: '120px', render: (o) => categoryBar(o.stats.byCategory) },
           {
             key: 'decision', label: 'Decision',
             render: (o) => decisionButtons({

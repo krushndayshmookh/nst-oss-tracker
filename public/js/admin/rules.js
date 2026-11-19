@@ -40,10 +40,6 @@ function validate(draft, numberFields) {
     numberFields['tiers.major'].setError('Must be greater than the Established tier.');
     ok = false;
   }
-  if (ok && values['minStarsOrgRepo'] > values['tiers.established']) {
-    // allowed by the server, but it leaves no room for the "Emerging" tier; say so without blocking
-    numberFields['minStarsOrgRepo'].setError(null);
-  }
   return ok;
 }
 
@@ -124,7 +120,7 @@ export default async function (el) {
     dirtyNote.textContent = dirty ? 'You have unsaved changes.' : 'No unsaved changes.';
     problems.hidden = true;
   };
-  for (const f of Object.values(numberFields)) f.input.addEventListener('input', onChange);
+  for (const f of Object.values(numberFields)) f.input.addEventListener('input', () => { f.setError(null); onChange(); });
   const editors = LISTS.map((spec) => listEditor(spec, draft, onChange));
 
   const form = h('form', { class: 'stack', novalidate: true },

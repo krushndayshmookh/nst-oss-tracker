@@ -33,6 +33,7 @@ const routes = [
 ];
 
 let router = null;
+let wasAdmin = false; // signed in earlier in this page's life; Sign out reloads the page, which resets it
 
 router = startRouter(routes, app, {
   title: 'NST Open Source admin',
@@ -46,11 +47,14 @@ router = startRouter(routes, app, {
     }
     if (nav) nav.hidden = !me.admin;
     if (!me.admin) {
+      const expired = takeExpired() || wasAdmin;
+      wasAdmin = false;
       closeDialogs();
       document.title = 'Sign in · NST Open Source admin';
-      renderLogin(app, me, { expired: takeExpired(), onDone: () => router.refresh() });
+      renderLogin(app, me, { expired: expired && !me.unreachable, onDone: () => router.refresh() });
       return false; // the router leaves #app to the sign-in form
     }
+    wasAdmin = true;
     if (ctx.path === '/') {
       navigate('/students', ctx.query, { replace: true });
       return false;
