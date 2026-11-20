@@ -4,7 +4,8 @@ import express from 'express';
 import { ApiError, badRequest, notFound } from '../auth.js';
 import { yearLabel } from '../classify.js';
 import { csvLine, parseCsv } from '../csv.js';
-import { zoned, TZ } from '../dates.js';
+import { isYmd, zoned, TZ } from '../dates.js';
+import { pastResults } from '../pastResults.js';
 import { enqueue } from '../jobs.js';
 import {
   BAND_KEYS, DEFAULT_BANDS, DEFAULT_WEIGHTS, DISCLAIMER, FEATURE_HELP, FEATURE_KEYS, loadPrograms, programOrgDoc, savePrograms, validatePrograms,
@@ -512,6 +513,30 @@ export function ownerRouter({ db, config, owner }) {
     // deleting leaves no newer timestamp behind, so the calibration is refreshed explicitly
     const job = await queueScores('outcomes');
     res.json({ ok: true, deleted: r.deletedCount, job: jobRef(job) });
+  }));
+
+  // ---------- past results: how past applicants worked in the year before selection ----------
+
+  router.get('/past-results', wrap(async (req, res) => {
+    const cfg = await loadPrograms(db);
+    const names = new Map(cfg.programs.map((p) => [p.key, p.name]));
+    const available = [];
+    for await (const g of db.collection('program_outcomes').aggregate([
+      { $group: { _id: { program: '$program', year: '$year' }, applicants: { $sum: 1 }, selected: { $sum: { $cond: ['$selected', 1, 0] } } } },
+      { $sort: { '_id.year': -1, '_id.program': 1 } },
+    ])) {
+      if (names.has(g._id.program)) available.push({ program: g._id.program, name: names.get(g._id.program), year: g._id.year, applicants: g.applicants, selected: g.selected });
+    }
+    const key = oneOf(req.query, 'program', cfg.programs.map((p) => p.key), available[0]?.program || '');
+    const year = intParam(req.query, 'year', { min: 2015, max: 2035, def: available.find((a) => a.program === key)?.year ?? null });
+    const from = str(req.query, 'from');
+    const to = str(req.query, 'to');
+    for (const [n, v] of [['from', from], ['to', to]]) if (v && !isYmd(v)) throw badRequest(`invalid ${n}: expected a date (YYYY-MM-DD)`);
+    if (from && to && from > to) throw badRequest('invalid range: from is after to');
+    if (!key || year === null) return res.json({ available, program: null, year: null, groups: null });
+    const program = cfg.programs.find((p) => p.key === key);
+    const out = await pastResults(db, { cfg, program, year, from: from || null, to: to || null, tz });
+    res.json({ available, ...out });
   }));
 
   // ---------- recompute ----------

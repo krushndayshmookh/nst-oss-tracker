@@ -8,6 +8,7 @@
 //   #/owner                     Summary          ?campus=&year=&p=<program>
 //   #/owner/students            Students         ?campus=&year=&program=&band=&org=&flag=&realChance=&q=&sort=&order=&page=
 //   #/owner/orgs                Organisations    ?program=&campus=&q=&minStudents=&sort=&order=&open=<login>
+//   #/owner/past                Past results     ?program=&year=
 //   #/owner/settings            Settings         ?s=programs|orgs|outcomes
 //   any of them + ?student=<username>   opens the student panel over the page
 
@@ -23,6 +24,7 @@ const SECTIONS = [
   { key: 'summary', path: '/owner', label: 'Summary', load: () => import('./summary.js') },
   { key: 'students', path: '/owner/students', label: 'Students', load: () => import('./students.js') },
   { key: 'orgs', path: '/owner/orgs', label: 'Organisations', load: () => import('./orgs.js') },
+  { key: 'past', path: '/owner/past', label: 'Past results', load: () => import('./past.js') },
   { key: 'settings', path: '/owner/settings', label: 'Settings', load: () => import('./settings.js') },
 ];
 

@@ -409,6 +409,7 @@ test('scheduler + jobs API: 409 on a concurrent sync, cancel keeps what was save
     // while it runs: a second trigger is refused with the id of the running job, and the scheduler waits
     const second = await app.post('/api/admin/jobs/sync', { full: true });
     assert.deepEqual([second.status, second.body.error.code, second.body.error.jobId], [409, 'conflict', first.body.job.id]);
+    await db.collection('settings').deleteOne({ _id: 'schedule' }); // the app may have created it with the real clock
     await ensureSchedule(db, { now: new Date('2026-11-19T10:00:00Z') });
     assert.deepEqual(await tick(db, { now: new Date('2026-11-19T21:00:10Z') }), { fired: null, why: 'a sync is already queued or running' });
     const view = (await app.get('/api/admin/schedule')).body;

@@ -261,3 +261,28 @@ tr.org-people .fine { padding: 6px 12px; margin: 0; }
   .rc, .band > i, .bandbar > i, .feat-track > span, .tl-col > i, .crowdcell .track > span, .od-score { forced-color-adjust: none; }
 }
 @media print { .set-actions { position: static; } }
+
+/* ── Past results: selected vs not selected applicants of a past round ── */
+.past-scope { margin: 0; }
+.past-cards .stat { gap: var(--s-1); }
+.past-cmp dl { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); margin: var(--s-1) 0; }
+.past-cmp dl > div { display: flex; flex-direction: column-reverse; gap: 2px; min-width: 0; }
+.past-cmp dt { font-size: var(--fs-sm); color: var(--ink-2); }
+.past-cmp dd { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: var(--fs-2xl); line-height: 1.1; font-variant-numeric: lining-nums tabular-nums; }
+.past-cmp .is-sel { border-left: 4px solid var(--chart-1); padding-left: var(--s-2); }
+.past-cmp .is-not { border-left: 4px solid var(--chart-other); padding-left: var(--s-2); }
+.past-cmp .is-not dd { color: var(--ink-2); }
+.past-chart { height: 300px; }
+.past-table .table-wrap { position: relative; } /* keeps the visually hidden labels inside the scrolling box */
+.past-table tr.is-selected td:first-child { box-shadow: inset 4px 0 0 var(--chart-1); }
+.past-table tr.group-start td { border-top: 2px solid var(--rule-strong); }
+.past-ready { display: inline-flex; gap: 4px; align-items: center; }
+.map-tag { font-size: var(--fs-xs); color: var(--ink-3); }
+.map-tag.map-contains, .map-tag.map-none { color: var(--warn); font-weight: 600; }
+.past-medians { margin: 0; list-style: none; display: grid; gap: 2px; }
+.past-honest p { margin-top: 0; max-width: 75ch; }
+@media (max-width: 560px) {
+  .past-cards > * { flex-basis: 100%; }
+  .past-chart { height: 240px; }
+  .past-cmp dd { font-size: var(--fs-xl); }
+}

@@ -46,7 +46,18 @@ const ELIGIBILITY = {
   'other-major': 'General signal, not a program: merged work in any major-tier open-source project.',
 };
 
+/** Application deadlines known per program and year (SPEC addendum G, past results). Used when a program has none stored. */
+export const KNOWN_DEADLINES = { gsoc: { 2025: '2025-04-08' } };
+
 const lcTrim = (s) => String(s ?? '').trim();
+
+/** { "<year>": "YYYY-MM-DD" } kept to valid entries, years in ascending order. */
+function cleanDeadlines(d) {
+  const out = {};
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return out;
+  for (const y of Object.keys(d).sort()) if (/^\d{4}$/.test(y) && isYmd(d[y])) out[y] = d[y];
+  return out;
+}
 const uniq = (list) => [...new Set(list)];
 
 // ---------- defaults / seed ----------
@@ -68,6 +79,7 @@ function fillProgram(p, now = new Date()) {
     preWindowWeight: Number.isFinite(p.preWindowWeight) ? p.preWindowWeight : DEFAULT_PRE_WINDOW_WEIGHT,
     weights: { ...DEFAULT_WEIGHTS, ...(p.weights || {}) },
     notes: p.notes || '', eligibilityNote: p.eligibilityNote ?? ELIGIBILITY[p.key] ?? '', starter: Boolean(p.starter),
+    deadlines: cleanDeadlines(p.deadlines === undefined ? KNOWN_DEADLINES[p.key] : p.deadlines),
   };
 }
 
@@ -222,11 +234,23 @@ export function validatePrograms(body) {
     for (const f of ['notes', 'eligibilityNote']) {
       if (p[f] !== undefined && (typeof p[f] !== 'string' || p[f].length > 2000)) return { error: `${where}: ${f} must be text of at most 2000 characters` };
     }
+    let deadlines = {};
+    if (p.deadlines !== undefined && p.deadlines !== null) {
+      if (typeof p.deadlines !== 'object' || Array.isArray(p.deadlines)) return { error: `${where}: deadlines must be an object { "2025": "2025-04-08" }` };
+      const entries = Object.entries(p.deadlines);
+      if (entries.length > 30) return { error: `${where}: at most 30 application deadlines` };
+      for (const [y, d] of entries) {
+        if (!/^\d{4}$/.test(y) || Number(y) < 2015 || Number(y) > 2035) return { error: `${where}: deadline year "${String(y).slice(0, 10)}" must be 2015 to 2035` };
+        if (!isYmd(d)) return { error: `${where}: the application deadline of ${y} must be a date (YYYY-MM-DD)` };
+      }
+      deadlines = cleanDeadlines(p.deadlines);
+    } else if (p.deadlines === undefined) deadlines = cleanDeadlines(KNOWN_DEADLINES[key]);
     const orgSource = typeof p.orgSource === 'string' && /^(manual|[a-z]+-\d{4})$/.test(p.orgSource) ? p.orgSource : 'manual';
     programs.push({
       key, name, enabled: p.enabled !== false, prestigious: p.prestigious !== false, match, orgs: orgs.value, repos: repos.value, orgSource,
       includeLowStar: p.includeLowStar !== false, window: { from: p.window.from, to: p.window.to }, preWindowWeight: pre, weights,
       notes: (p.notes || '').trim(), eligibilityNote: (p.eligibilityNote ?? ELIGIBILITY[key] ?? '').trim(), starter: Boolean(p.starter),
+      deadlines,
     });
   }
   const bands = { ...DEFAULT_BANDS, ...(body.bands && typeof body.bands === 'object' ? body.bands : {}) };

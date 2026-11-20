@@ -39,7 +39,7 @@ export const CURVES = {
 };
 
 const round = (v, d = 2) => { const f = 10 ** d; return Math.round((v + Number.EPSILON) * f) / f; };
-const median = (list) => {
+export const median = (list) => {
   if (!list.length) return 0;
   const s = [...list].sort((a, b) => a - b);
   const m = s.length >> 1;
@@ -330,7 +330,7 @@ async function prsByAuthor(db, authors = null) {
 }
 
 /** Shifts a YYYY-MM-DD date by whole years (29 Feb → 28 Feb). */
-function shiftYears(ymd, n) {
+export function shiftYears(ymd, n) {
   const [y, m, d] = ymd.split('-').map(Number);
   const yy = y + n;
   const last = new Date(Date.UTC(yy, m, 0)).getUTCDate();

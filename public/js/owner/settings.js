@@ -109,6 +109,17 @@ function programsTab(el, ctx, cfg, shared) {
     const match = field({ label: 'Which pull requests count', name: `match-${index}`, type: 'select', value: p.match, options: Object.entries(MATCH_LABELS).map(([value, label]) => ({ value, label })) });
     const from = field({ label: 'Contribution window from', name: `from-${index}`, type: 'date', value: p.window.from });
     const to = field({ label: 'to (application deadline)', name: `to-${index}`, type: 'date', value: p.window.to });
+    const fmtDeadlines = (d) => Object.entries(d || {}).map(([y, v]) => `${y}: ${v}`).join(', ');
+    const deadlines = field({ label: 'Past application deadlines', name: `deadlines-${index}`, value: fmtDeadlines(p.deadlines),
+      hint: 'Year: date, separated by commas, e.g. 2025: 2025-04-08. Used by Past results.', attrs: { placeholder: '2025: 2025-04-08', spellcheck: 'false' } });
+    const parseDeadlines = (text) => {
+      const out = {};
+      for (const part of String(text || '').split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean)) {
+        const m = /^(\S+?)\s*[:=]\s*(\S+)$/.exec(part);
+        if (m) out[m[1]] = m[2]; else out[part] = '';
+      }
+      return out;
+    };
     const pre = field({ label: 'Weight of earlier work', name: `pre-${index}`, type: 'number', value: p.preWindowWeight, hint: 'A PR merged before the window counts this much (0 to 1).', attrs: { min: 0, max: 1, step: 0.05, inputmode: 'decimal' } });
     const low = field({ label: 'Also count small repositories of these organisations', name: `low-${index}`, type: 'checkbox', value: p.includeLowStar, hint: 'Pull requests that are "low signal" only because the repository has few stars.' });
 
@@ -171,7 +182,8 @@ function programsTab(el, ctx, cfg, shared) {
           p._new ? on(key, () => { p.key = key.get().toLowerCase(); }) : key.row,
           on(from, () => { p.window.from = from.get(); }),
           on(to, () => { p.window.to = to.get(); }),
-          on(pre, () => { p.preWindowWeight = num(pre.input); })),
+          on(pre, () => { p.preWindowWeight = num(pre.input); }),
+          on(deadlines, () => { p.deadlines = parseDeadlines(deadlines.get()); })),
         h('div', { class: 'set-grid' },
           on(enabled, () => { p.enabled = enabled.get(); }),
           on(prestigious, () => { p.prestigious = prestigious.get(); }),
@@ -344,6 +356,7 @@ async function outcomesTab(el, ctx, cfg) {
       { key: 'total', label: 'Applicants', num: true },
       { key: 'selected', label: 'Selected', num: true },
       { key: 'unmatched', label: 'Not tracked students', num: true, title: 'Usernames that are not in the student list: they cannot be scored, so they do not enter the calibration' },
+      { key: 'past', label: '', render: (g) => h('a', { href: href('/owner/past', { program: g.program, year: String(g.year) }), title: 'How these applicants worked in the year before' }, 'Past results') },
       { key: 'act', label: '', render: (g) => {
         const b = h('button', { type: 'button', class: 'btn btn-sm btn-danger', name: `del-${g.program}-${g.year}` }, 'Delete');
         b.addEventListener('click', async () => {

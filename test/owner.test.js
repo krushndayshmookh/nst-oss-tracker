@@ -458,7 +458,7 @@ function session(app) {
   };
 }
 
-const OWNER_GETS = ['/summary', '/students', '/students/alice', '/orgs', '/programs', '/program-orgs', '/outcomes', '/status', '/export/students.csv'];
+const OWNER_GETS = ['/summary', '/students', '/students/alice', '/orgs', '/programs', '/program-orgs', '/outcomes', '/status', '/export/students.csv', '/past-results'];
 
 /** alice: strong in zulip (GSoC); bob: one open PR in sugarlabs; carol: nothing; dave: inactive. */
 async function seedDb(db) {
@@ -781,7 +781,7 @@ test('owner API: programs settings, org list mapping, outcomes + calibration, re
     assert.deepEqual(cfg.featureKeys, ['depth', 'substance', 'sustained', 'recency', 'engagement', 'breadth', 'trackRecord']);
     assert.deepEqual(Object.keys(cfg.featureHelp), cfg.featureKeys);
     assert.deepEqual(cfg.defaults.bands, BANDS);
-    assert.deepEqual(Object.keys(cfg.programs[0]), ['key', 'name', 'enabled', 'prestigious', 'match', 'orgs', 'repos', 'orgSource', 'includeLowStar', 'window', 'preWindowWeight', 'weights', 'notes', 'eligibilityNote', 'starter']);
+    assert.deepEqual(Object.keys(cfg.programs[0]), ['key', 'name', 'enabled', 'prestigious', 'match', 'orgs', 'repos', 'orgSource', 'includeLowStar', 'window', 'preWindowWeight', 'weights', 'notes', 'eligibilityNote', 'starter', 'deadlines']);
     assert.equal((await app.put('/api/owner/programs', { programs: cfg.programs, bands: { strong: 20, possible: 30, early: 10 } })).status, 400);
     assert.equal((await app.get('/api/owner/programs')).body.bands.strong, 60, 'a rejected document changes nothing');
     // raise the bar: Alice is no longer Strong; disable Outreachy

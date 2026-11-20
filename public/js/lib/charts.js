@@ -7,6 +7,8 @@
 //   both also take, for rates (SPEC addendum D): format(value) → tick / tooltip text with its unit,
 //   axisTitle (the unit, printed along the value axis), tooltipLabel(seriesIndex, dataIndex, value) → one tooltip line
 //   doughnutChart(canvas, { labels, data, colors? })                            → same
+//   line and bar charts also take markers: [{ from, to?, label }] — positions in category units (0 = the centre of the
+//   first label, -0.5 its left edge, fractions allowed): with `to` a shaded span, without it a vertical line.
 //
 // Colour is assigned by what a series IS, not by its position: a series or slice whose label (or `color`) names a
 // category, tier or PR state always gets that entity's colour, the same one its badge uses. Anything else takes
@@ -178,6 +180,62 @@ function mount(canvas, build) {
   };
 }
 
+/** Draws `markers` (see the header) on a category x axis: spans under the data, lines and labels over it. */
+function markerPlugin(get) {
+  const px = (chart, v) => {
+    const x = chart.scales.x;
+    const n = chart.data.labels.length;
+    const step = n > 1 ? x.getPixelForValue(1) - x.getPixelForValue(0) : x.width;
+    return x.getPixelForValue(0) + v * step;
+  };
+  const clamp = (chart, v) => Math.min(chart.chartArea.right, Math.max(chart.chartArea.left, v));
+  return {
+    id: 'ossMarkers',
+    beforeDatasetsDraw(chart) {
+      const list = get() || [];
+      if (!list.length || !chart.scales.x) return;
+      const { ctx, chartArea: a } = chart;
+      ctx.save();
+      for (const m of list.filter((x) => x.to !== undefined && x.to !== null)) {
+        const l = clamp(chart, px(chart, m.from)); const r = clamp(chart, px(chart, m.to));
+        ctx.fillStyle = cssVar('--chart-grid') || '#e3e9e6';
+        ctx.globalAlpha = 0.6;
+        ctx.fillRect(l, a.top, Math.max(1, r - l), a.bottom - a.top);
+      }
+      ctx.restore();
+    },
+    afterDatasetsDraw(chart) {
+      const list = get() || [];
+      if (!list.length || !chart.scales.x) return;
+      const t = theme();
+      const { ctx, chartArea: a } = chart;
+      ctx.save();
+      ctx.font = `11px ${t.font}`;
+      ctx.textBaseline = 'top';
+      let row = 0;
+      for (const m of list) {
+        const span = m.to !== undefined && m.to !== null;
+        const x = clamp(chart, px(chart, m.from));
+        if (!span) {
+          ctx.strokeStyle = t.ink2;
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath(); ctx.moveTo(x, a.top); ctx.lineTo(x, a.bottom); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        if (m.label) {
+          const w = ctx.measureText(m.label).width;
+          const lx = span ? x + 4 : (x + 4 + w > a.right ? x - 4 - w : x + 4);
+          ctx.fillStyle = t.ink2;
+          ctx.fillText(m.label, Math.max(a.left, lx), a.top + 2 + row * 14);
+          row++;
+        }
+      }
+      ctx.restore();
+    },
+  };
+}
+
 function cartesian(type, canvas, input, style) {
   let current = input;
   const handle = mount(canvas, () => {
@@ -214,15 +272,15 @@ function cartesian(type, canvas, input, style) {
     };
     const shell = { data: { labels: [], datasets: [] }, options: {}, canvas };
     paint(shell);
-    return { config: { type, data: shell.data, options: shell.options }, paint, set: (next) => { current = { ...current, ...next }; } };
+    return { config: { type, data: shell.data, options: shell.options, plugins: [markerPlugin(() => current.markers)] }, paint, set: (next) => { current = { ...current, ...next }; } };
   });
   describe(canvas, input.label, input.labels, input.series || []);
   return handle;
 }
 
 /** Line chart for change over time. `labels` in 'YYYY-MM' form are shown as 'Oct 2026'. */
-export function lineChart(canvas, { labels, series, label, format, axisTitle, tooltipLabel } = {}) {
-  return cartesian('line', canvas, { labels, series, label, format, axisTitle, tooltipLabel }, (color, t) => ({
+export function lineChart(canvas, { labels, series, label, format, axisTitle, tooltipLabel, markers } = {}) {
+  return cartesian('line', canvas, { labels, series, label, format, axisTitle, tooltipLabel, markers }, (color, t) => ({
     borderColor: color,
     backgroundColor: color,
     borderWidth: 2,
@@ -239,8 +297,8 @@ export function lineChart(canvas, { labels, series, label, format, axisTitle, to
 }
 
 /** Bar chart. `stacked` stacks the series; `horizontal` puts categories on the y axis (use it for long names). */
-export function barChart(canvas, { labels, series, stacked = false, horizontal = false, label, format, axisTitle, tooltipLabel } = {}) {
-  return cartesian('bar', canvas, { labels, series, stacked, horizontal, label, format, axisTitle, tooltipLabel }, (color, t, o) => ({
+export function barChart(canvas, { labels, series, stacked = false, horizontal = false, label, format, axisTitle, tooltipLabel, markers } = {}) {
+  return cartesian('bar', canvas, { labels, series, stacked, horizontal, label, format, axisTitle, tooltipLabel, markers }, (color, t, o) => ({
     backgroundColor: color,
     hoverBackgroundColor: color,
     borderColor: t.surface,
