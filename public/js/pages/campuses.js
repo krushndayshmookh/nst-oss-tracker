@@ -12,7 +12,7 @@ import {
 } from './common.js';
 import {
   scaleOf, scaleToggle, unknownToggle, rate, pctVal, smallMark, campusYearTable, campusCsv, downloadButton, CAMPUS_SORT_DEFAULT,
-  campusMonthSeries, funnelMatrix, tierMixBlock, categoryMixBlock, yearBars, yearMetric, distributionTable, spreadKey, deltaLine,
+  campusMonthSeries, stepOf, hasStep, stepToggle, funnelMatrix, tierMixBlock, categoryMixBlock, yearBars, yearMetric, distributionTable, spreadKey, deltaLine,
 } from './campus-common.js';
 import { campusTechBlock } from './tech-common.js';
 
@@ -108,8 +108,11 @@ export default async function (el, ctx) {
       data.previousRange ? `The change compares with ${fmt.range(data.previousRange.from, data.previousRange.to)}, counted on today’s list of students. ` : null,
       data.total ? `All campuses together: ${pctVal(data.total.withOsMergedPct)} of ${fmt.num(data.total.students)} students have a merged open-source PR, ${rate(data.total.osMergedPer100)} merged per 100 students.` : null));
 
-  // ── 2. month by month + who takes part ──
-  const month = campusMonthSeries(activity, { scale, metric: 'merged', unknown: showUnknown, noun: 'open-source PRs' });
+  // ── 2. month by month (or week by week, day by day: ?step=) + who takes part ──
+  const wanted = stepOf(q);
+  const step = hasStep(activity, wanted) ? wanted : 'month'; // day rows are left out for a range too long to list day by day
+  const month = campusMonthSeries(activity, { scale, metric: 'merged', unknown: showUnknown, noun: 'open-source PRs', step });
+  const heading = { month: 'Month by month', week: 'Week by week', day: 'Day by day' }[step];
   const monthCanvas = h('canvas');
   put(el,
     h('div', { class: 'section-head' }, h('h2', null, 'How far students get'), scaleToggle(ctx, 'funnel', { two: ['Share of students', 'Counts'] })),
@@ -118,16 +121,19 @@ export default async function (el, ctx) {
       h('p', { class: 'card-note card-note-pad' },
         rateMode ? 'Each figure is a share of the campus’s tracked students, with the number of students beside it. ' : 'Number of students, with their share of the campus beside it. ',
         'Each step is a subset of the one before. Bars are scaled within a column, so read down a column to compare campuses.')),
-    h('div', { class: 'section-head' }, h('h2', null, 'Month by month'), scaleToggle(ctx, 'month', { labels: { share: 'Share active' } })),
-    card({ title: 'Merged open-source PRs by month', note: month ? month.unit : null },
+    h('div', { class: 'section-head' }, h('h2', null, heading),
+      h('div', { class: 'toolbar' }, stepToggle(ctx, activity, step), scaleToggle(ctx, 'month', { labels: { share: 'Share active' } }))),
+    card({ title: `Merged open-source PRs by ${step}`, note: month ? month.unit : null },
       month ? [
         h('div', { class: 'chart-box' }, monthCanvas),
         h('p', { class: 'card-note' },
-          scale === 'share' ? 'A student is active in a month when they opened or merged an open-source pull request in it. ' : null,
+          scale === 'share' ? `A student is active in a ${step} when they opened or merged an open-source pull request in it. ` : null,
+          step === 'week' ? 'Weeks start on Monday and are labelled by that date. ' : null,
+          wanted === 'day' && step !== 'day' ? 'This period is too long to show day by day; showing months. ' : null,
           'The number after a campus is its tracked students. ',
-          open ? 'The current month is incomplete. ' : null,
+          open ? `The current ${step} is incomplete. ` : null,
           h('a', { href: link('/activity', {}, ctx) }, 'Full activity breakdown')),
-      ] : h('p', { class: 'muted' }, 'No monthly figures for this period.')));
+      ] : h('p', { class: 'muted' }, `No ${{ month: 'monthly', week: 'weekly', day: 'daily' }[step]} figures for this period.`)));
 
   // ── 3. year of study within each campus ──
   const ym = yearMetric(scale);
