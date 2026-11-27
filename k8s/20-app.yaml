@@ -25,6 +25,10 @@ spec:
     spec:
       terminationGracePeriodSeconds: 30
       automountServiceAccountToken: false   # the app never talks to the Kubernetes API
+      # Only some nodes have /etc/rancher/k3s/registries.yaml mapping registry.nstsdc.org:5000 to the in-cluster
+      # registry; on the others (n8-n11 as of 27 Nov 2026) the pull times out. Remove once every node has it.
+      nodeSelector:
+        kubernetes.io/hostname: nst-n7
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000       # `node` user of the image
