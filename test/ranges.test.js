@@ -181,7 +181,7 @@ test('ranges: IST boundaries, opened vs merged in range, default = academic year
 
     // ---- activity
     const a = await get(`/api/activity?${AY}&category=all`);
-    assert.deepEqual(Object.keys(a), ['range', 'tz', 'metric', 'totals', 'byMonth', 'byWeek', 'byWeekday', 'byHour', 'heatmap', 'byCampusMonth', 'cohorts', 'smallCohortBelow', 'busiest', 'byDate']);
+    assert.deepEqual(Object.keys(a), ['range', 'tz', 'metric', 'totals', 'byMonth', 'byWeek', 'byWeekday', 'byHour', 'heatmap', 'byCampusMonth', 'byCampusWeek', 'byCampusDate', 'cohorts', 'smallCohortBelow', 'busiest', 'byDate']);
     assert.deepEqual(a.totals, { opened: 3, merged: 2, activeStudents: 2 });
     assert.deepEqual([a.byMonth[0].month, a.byMonth.at(-1).month, a.byMonth.length], ['2026-07', '2027-06', 12]);
     assert.deepEqual(a.byMonth.find((m) => m.month === '2026-11'), { month: '2026-11', opened: 1, merged: 0, activeStudents: 1 });
@@ -200,6 +200,15 @@ test('ranges: IST boundaries, opened vs merged in range, default = academic year
     assert.deepEqual(a.byWeek.find((w) => w.weekStart === '2026-10-26'), { weekStart: '2026-10-26', opened: 1, merged: 0 });
     assert.deepEqual(a.byCampusMonth.map(({ campus, month, opened, merged }) => ({ campus, month, opened, merged })), [{ campus: 'ADYPU', month: '2026-11', opened: 1, merged: 0 }, { campus: 'RU', month: '2026-07', opened: 0, merged: 1 },
       { campus: 'RU', month: '2026-09', opened: 1, merged: 0 }, { campus: 'RU', month: '2027-06', opened: 1, merged: 1 }]);
+    // the same campus rows per Monday-start week and per day (Campuses page, Week | Day step)
+    assert.deepEqual(a.byCampusWeek.map(({ campus, weekStart, opened, merged }) => ({ campus, weekStart, opened, merged })), [
+      { campus: 'ADYPU', weekStart: '2026-10-26', opened: 1, merged: 0 }, { campus: 'RU', weekStart: '2026-06-29', opened: 0, merged: 1 },
+      { campus: 'RU', weekStart: '2026-09-07', opened: 1, merged: 0 }, { campus: 'RU', weekStart: '2027-06-28', opened: 1, merged: 1 }]);
+    assert.deepEqual(a.byCampusDate.map(({ campus, date, opened, merged }) => ({ campus, date, opened, merged })), [
+      { campus: 'ADYPU', date: '2026-11-01', opened: 1, merged: 0 }, { campus: 'RU', date: '2026-07-02', opened: 0, merged: 1 },
+      { campus: 'RU', date: '2026-09-10', opened: 1, merged: 0 }, { campus: 'RU', date: '2027-06-30', opened: 1, merged: 1 }]);
+    assert.deepEqual(a.byCampusWeek[1], { campus: 'RU', weekStart: '2026-06-29', opened: 0, merged: 1, students: 2, per100Opened: 0, per100Merged: 50, activeStudents: 1, activePct: 50 });
+    assert.deepEqual(a.byCampusDate[0], { campus: 'ADYPU', date: '2026-11-01', opened: 1, merged: 0, students: 1, per100Opened: 100, per100Merged: 0, activeStudents: 1, activePct: 100 });
     // addendum D: rates on the cohort (2 RU students, 1 ADYPU)
     assert.deepEqual(a.cohorts, [{ campus: 'ADYPU', students: 1, smallCohort: true }, { campus: 'RU', students: 2, smallCohort: true }]);
     assert.deepEqual(a.byCampusMonth[1], { campus: 'RU', month: '2026-07', opened: 0, merged: 1, students: 2, per100Opened: 0, per100Merged: 50, activeStudents: 1, activePct: 50 });
@@ -211,6 +220,7 @@ test('ranges: IST boundaries, opened vs merged in range, default = academic year
     assert.deepEqual((await get(`/api/activity?${AY}&owner=Apache&campus=RU`)).totals, { opened: 1, merged: 2, activeStudents: 1 });
     const long = await get('/api/activity?from=2020-01-01&to=2027-07-01&category=all');
     assert.deepEqual([long.truncated, 'byDate' in long, long.totals.opened], [true, false, 6], 'more than 800 days: no day-by-day list');
+    assert.deepEqual(['byCampusDate' in long, Array.isArray(long.byCampusWeek)], [false, true], 'no campus day rows either; weeks stay');
     assert.equal((await app.get('/api/activity?metric=closed')).status, 400);
 
     // ---- the admin moves the academic year: the default range of every endpoint follows
@@ -656,7 +666,7 @@ test('activity: every bucket in IST, zero-filled axes, filters, metric, long and
     const o = await get(`/api/overview?${AUG}`);
     assert.deepEqual([o.prs.total, o.prs.merged], [a.totals.opened, a.totals.merged]);
     assert.deepEqual([sum(o.monthly, 'allOpened'), o.monthly.map((m) => m.month)], [6, ['2026-08', '2026-09']]);
-    for (const key of ['byMonth', 'byWeek', 'byDate', 'byWeekday', 'byHour', 'heatmap', 'byCampusMonth']) {
+    for (const key of ['byMonth', 'byWeek', 'byDate', 'byWeekday', 'byHour', 'heatmap', 'byCampusMonth', 'byCampusWeek', 'byCampusDate']) {
       assert.deepEqual([sum(a[key], 'opened'), sum(a[key], 'merged')], [6, 4], key);
     }
     // days: all 61 of them, in order, zero-filled

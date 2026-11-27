@@ -35,6 +35,8 @@ students work: by month, week, date, day of week, time of day.
      byHour:[{hour:0..23, opened, merged}],
      heatmap:[{dow, hour, opened, merged}],                  // 7×24, IST
      byCampusMonth:[{campus, month, opened, merged}],
+     byCampusWeek:[{campus, weekStart, opened, merged}],     // same rows per Monday-start week
+     byCampusDate:[{campus, date, opened, merged}],          // same rows per day; omitted with `truncated:true`
      busiest:{ day:{date,count}, week:{weekStart,count}, month:{month,count} } }`
 Uses `$dateTrunc` / `$dateToParts` with `timezone`. The same endpoint powers per-student (`author=`), per-repo and per-org activity.
 `/api/overview` `monthly` is replaced by this endpoint's `byMonth` for the active range (zero-filled).
@@ -234,6 +236,8 @@ New top-level `cohorts` and `smallCohortBelow`; every `byCampusMonth` row gains 
 - `activeStudents` = distinct students of that campus with ≥1 PR opened or merged that month in the selected category (same definition as
   `byMonth[].activeStudents`; the campus values of a month add up to it). `activePct` = that / `students` × 100.
 - `byCampusMonth` stays sparse (only campus-months with ≥1 event: zero-fill against `byMonth[].month`), sorted by campus (order above), then month.
+  `byCampusWeek` / `byCampusDate` follow the same rules per week (`weekStart`, zero-fill against `byWeek`) and per day (`date`, zero-fill
+  against `byDate`), with the same rate fields; `activeStudents` there counts students active in that week / day.
 - `cohorts` lists every campus with ≥1 active student under the filters, plus any campus that appears in `byCampusMonth` (then `students: 0`
   and `null` rates on its rows).
 ```json
@@ -324,6 +328,8 @@ Field notes:
 - `topOrgs` / `topRepos`: by `osMerged` desc, then `osPrs`; 5 each here (10 on the campus page). `students` = distinct students of that
   campus (of all campuses in `total`). Only owners / repos with open-source PRs in range.
 - Monthly lines per campus: `/api/activity?category=open_source` → `byCampusMonth` (`per100Merged` | `activePct` | `merged` for the three toggle states).
+  A Month | Week | Day switch (`?step=week|day`, default month) swaps in `byCampusWeek` / `byCampusDate`; Day is hidden when the range
+  is too long for `byDate`, and a `step=day` link then falls back to months with a note.
 - Year-wise bars within a campus: the `rows` of that campus (cohort = that campus-year).
 
 ## GET /api/campuses/:campus

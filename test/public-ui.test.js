@@ -142,6 +142,31 @@ test('campuses by month: a server without cohorts falls back to counts; nothing 
   assert.equal(campusMonthSeries(null), null);
 });
 
+test('campuses by week and by day: same scales on the week / day rows; a missing step gives null', () => {
+  const { stepOf, hasStep, STEPS } = common;
+  const steps = {
+    ...activity,
+    byWeek: [{ weekStart: '2026-11-16' }, { weekStart: '2026-11-23' }],
+    byCampusWeek: [{ campus: 'RU', weekStart: '2026-11-23', opened: 40, merged: 12, students: 1504, per100Opened: 2.7, per100Merged: 0.8, activeStudents: 30, activePct: 2 }],
+    byDate: [{ date: '2026-11-25' }, { date: '2026-11-26' }],
+    byCampusDate: [{ campus: 'SMRU', date: '2026-11-25', opened: 1, merged: 1, students: 49, per100Opened: 2, per100Merged: 2, activeStudents: 1, activePct: 2 }],
+  };
+  const w = campusMonthSeries(steps, { scale: 'per100', metric: 'merged', step: 'week' });
+  assert.deepEqual(w.input.labels, ['2026-11-16', '2026-11-23']);
+  assert.deepEqual(w.input.series[0].data, [0, 0.8]);
+  assert.equal(w.step, 'week');
+  assert.match(w.input.label, /per week by campus$/);
+  const d = campusMonthSeries(steps, { scale: 'raw', metric: 'opened', step: 'day' });
+  assert.deepEqual(d.input.labels, ['2026-11-25', '2026-11-26']);
+  assert.deepEqual(d.input.series[1].data, [1, 0]);
+  assert.match(d.input.label, /per day by campus$/);
+  assert.equal(campusMonthSeries(activity, { step: 'day' }), null, 'a response without day rows has no day chart');
+  assert.equal(campusMonthSeries(steps, { step: 'nonsense', metric: 'opened' }).input.labels.length, 2, 'unknown step falls back to months');
+  assert.deepEqual([stepOf({}), stepOf({ step: 'week' }), stepOf({ step: 'day' }), stepOf({ step: 'year' })], ['month', 'week', 'day', 'month']);
+  assert.deepEqual([hasStep(steps, 'day'), hasStep(activity, 'day'), hasStep(activity, 'month')], [true, false, true]);
+  assert.deepEqual(Object.keys(STEPS), ['month', 'week', 'day']);
+});
+
 test('year-wise metric follows the scale; campus labels and colours are stable', () => {
   const r = { osMergedPer100: 60, osMerged: 345, withOsMergedPct: 5.2, withOsMerged: 1 };
   assert.equal(yearMetric('per100').value(r), 60);

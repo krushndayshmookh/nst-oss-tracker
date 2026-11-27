@@ -202,17 +202,40 @@ export function downloadButton(text, filename, label = 'Download CSV') {
   }, label);
 }
 
-/* ───────────── campuses by month (GET /api/activity → byCampusMonth) ───────────── */
+/* ───────────── campuses over time (GET /api/activity → byCampusMonth | byCampusWeek | byCampusDate) ───────────── */
+
+/** The time steps of the campus lines: the axis list and the sparse campus rows of /api/activity, and the key both share. */
+export const STEPS = {
+  month: { axis: 'byMonth', rows: 'byCampusMonth', key: 'month', word: 'month', label: 'Month' },
+  week: { axis: 'byWeek', rows: 'byCampusWeek', key: 'weekStart', word: 'week', label: 'Week' },
+  day: { axis: 'byDate', rows: 'byCampusDate', key: 'date', word: 'day', label: 'Day' },
+};
+/** ?step=week|day → 'week' | 'day'; anything else → 'month'. */
+export const stepOf = (q) => (q && STEPS[q.step] ? q.step : 'month');
+/** Whether an /api/activity response carries the rows for a step (day rows are left out for a range that is too long). */
+export const hasStep = (activity, step) => Boolean(activity && Array.isArray(activity[STEPS[step].rows]) && Array.isArray(activity[STEPS[step].axis]));
+
+/** Month | Week | Day switch (`?step=`). A step the response cannot show is left out. */
+export function stepToggle(ctx, activity, step = stepOf(ctx.query)) {
+  const options = Object.entries(STEPS).filter(([k]) => k === 'month' || hasStep(activity, k))
+    .map(([value, s]) => ({ value, label: s.label, title: `One point per ${s.word}` }));
+  if (options.length < 2) return null;
+  return segmented({
+    name: 'step', label: 'Time step', options, value: step,
+    onChange: (v) => setQuery({ step: v === 'month' ? '' : v }),
+  });
+}
 
 /**
- * Chart input for "campuses by month" in one of the three scales.
- * → null when there is nothing to compare, else { input (for lineChart / barChart), names, unit, summary }
- * opts: { scale, metric: 'opened' | 'merged', unknown (include the Unknown campus), noun ('pull requests') }
+ * Chart input for "campuses by month / week / day" in one of the three scales.
+ * → null when there is nothing to compare, else { input (for lineChart / barChart), names, unit, step }
+ * opts: { scale, metric: 'opened' | 'merged', unknown (include the Unknown campus), noun ('pull requests'), step ('month' | 'week' | 'day') }
  */
-export function campusMonthSeries(activity, { scale = 'per100', metric = 'merged', unknown = false, noun = 'pull requests' } = {}) {
-  if (!activity || !Array.isArray(activity.byCampusMonth)) return null;
-  const months = (activity.byMonth || []).map((m) => m.month);
-  const rows = activity.byCampusMonth;
+export function campusMonthSeries(activity, { scale = 'per100', metric = 'merged', unknown = false, noun = 'pull requests', step = 'month' } = {}) {
+  const st = STEPS[step] || STEPS.month;
+  if (!activity || !Array.isArray(activity[st.rows])) return null;
+  const months = (activity[st.axis] || []).map((m) => m[st.key]);
+  const rows = activity[st.rows];
   const hasRates = rows.length === 0 || rows.some((r) => 'students' in r);
   const mode = hasRates ? scale : 'raw'; // an older server without cohorts can only show counts
   const cohorts = Array.isArray(activity.cohorts) && activity.cohorts.length
@@ -220,7 +243,7 @@ export function campusMonthSeries(activity, { scale = 'per100', metric = 'merged
     : [...new Set(rows.map((r) => r.campus))].map((campus) => ({ campus, students: null, smallCohort: false }));
   const names = cohorts.filter((c) => unknown || c.campus !== 'Unknown');
   if (!months.length || !names.length) return null;
-  const at = new Map(rows.map((r) => [`${r.campus}|${r.month}`, r]));
+  const at = new Map(rows.map((r) => [`${r.campus}|${r[st.key]}`, r]));
   const word = metric === 'merged' ? 'merged' : 'opened';
   const rateKey = metric === 'merged' ? 'per100Merged' : 'per100Opened';
   const cell = (c, m) => at.get(`${c.campus}|${m}`) || null;
@@ -254,8 +277,9 @@ export function campusMonthSeries(activity, { scale = 'per100', metric = 'merged
     input: {
       labels: months, series, tooltipLabel, axisTitle: AXIS[mode],
       format: mode === 'share' ? (v) => pctVal(v) : mode === 'per100' ? (v) => rate(v) : null,
-      label: `${cap(unit)}, per month by campus`,
+      label: `${cap(unit)}, per ${st.word} by campus`,
     },
+    step: st.word,
   };
 }
 
