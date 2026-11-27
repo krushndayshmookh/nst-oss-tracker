@@ -3,7 +3,7 @@
 import { api } from '../lib/api.js';
 import { h, pageHead, statCard, card, table, barCell, badge, categoryBadge, mixBar, overrideBadge, calendarHeatmap, fmt, CATEGORIES } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeLine, rangeSentence, isPastRange, link, repoHref, contributorsTable, fetchActivity, activityCard, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, rangeSentence, isPastRange, link, repoHref, contributorsTable, fetchActivity, activityCard, put, hasContributions, contribHref } from './common.js';
 import { techList } from './tech-common.js';
 
 export default async function (el, ctx) {
@@ -34,7 +34,12 @@ export default async function (el, ctx) {
       statCard({ label: 'Open-source PRs', value: st.osPrs }),
       statCard({ label: 'Students', value: st.students }),
       statCard({ label: 'Projects', value: st.repos, sub: st.maxStars ? `largest has ${fmt.compact(st.maxStars)} stars` : null }),
-      statCard({ label: 'All PRs', value: st.prs, sub: `${fmt.num(st.merged)} merged`, href: link('/prs', { owner: org.login, category: 'all' }, ctx) })),
+      statCard({ label: 'All PRs', value: st.prs, sub: `${fmt.num(st.merged)} merged`, href: link('/prs', { owner: org.login, category: 'all' }, ctx) }),
+      // issues and reviews by NST students in this organisation's projects (SPEC addendum I)
+      hasContributions(meta) ? [
+        statCard({ label: 'Issues raised', value: st.issues ?? 0, sub: `${fmt.num(st.osIssues ?? 0)} in open source`, href: contribHref('issue', { owner: org.login, category: 'all' }, ctx), title: 'See the issues raised in these projects' }),
+        statCard({ label: 'Reviews given', value: st.reviews ?? 0, sub: `${fmt.num(st.osReviews ?? 0)} in open source`, href: contribHref('review', { owner: org.login, category: 'all' }, ctx), title: 'See the reviews given in these projects' }),
+      ] : null),
     present.length > 1 ? card({ title: 'All pull requests by category' }, mixBar(st.byCategory, { merged: st.osMerged ?? null, period: rangeSentence(data.range) || null, legend: true, large: true })) : null,
   );
 

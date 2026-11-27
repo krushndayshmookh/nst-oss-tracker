@@ -1,6 +1,7 @@
 // GitHub client (SPEC section 4): GraphQL PR search ported from legacy/fetch_prs.py + two REST user lookups.
 //
 //   fetchUserPRs(username, {since?, ...opts}) -> { nodes, count, error, fatal, rateLimit }   never throws for GitHub-side failures
+//   fetchUserIssues / fetchUserReviews(username, {since?, ...opts}) -> same shape (SPEC addendum I2)
 //   getUser(login, opts) / getUserById(id, opts) -> { login, id, name } | null (404)        throws when GitHub cannot be reached
 //
 // opts: { fetch = global fetch, token = GITHUB_TOKEN, sleep = real sleep, now = () => new Date(), log = () => {} }
@@ -37,10 +38,35 @@ export const PR_FIELDS = `issueCount pageInfo{hasNextPage endCursor}
    languages(first:5, orderBy:{field:SIZE, direction:DESC}){totalSize edges{size node{name}}}
    repositoryTopics(first:10){nodes{topic{name}}}}}}`;
 
-export const SEARCH_QUERY = `query($q: String!, $first: Int!, $after: String) {
- s: search(query: $q, type: ISSUE, first: $first, after: $after) {${PR_FIELDS}}
+/** The search query around a set of node fields (`issueCount pageInfo{…} nodes{…}`). */
+export const searchQuery = (fields) => `query($q: String!, $first: Int!, $after: String) {
+ s: search(query: $q, type: ISSUE, first: $first, after: $after) {${fields}}
  rateLimit{remaining resetAt}
 }`;
+export const SEARCH_QUERY = searchQuery(PR_FIELDS);
+
+// Repository fields shared by every search (the same as in PR_FIELDS, so repo / owner metadata is upserted the same way).
+export const REPO_FIELDS = `repository{nameWithOwner isFork isArchived isPrivate stargazerCount forkCount description createdAt
+   owner{login __typename} primaryLanguage{name} licenseInfo{spdxId}
+   languages(first:5, orderBy:{field:SIZE, direction:DESC}){totalSize edges{size node{name}}}
+   repositoryTopics(first:10){nodes{topic{name}}}}`;
+
+// Issues a student raised (SPEC addendum I2).
+export const ISSUE_FIELDS = `issueCount pageInfo{hasNextPage endCursor}
+ nodes{... on Issue{databaseId url number title state stateReason createdAt updatedAt closedAt
+  author{login ... on User{databaseId}}
+  comments{totalCount}
+  ${REPO_FIELDS}}}`;
+
+/**
+ * Pull requests of other people that `login` reviewed; only that login's reviews are listed, the LATEST 50 (so the
+ * verdict and the last review date are right on long review threads). `login` must be valid.
+ */
+export const reviewFields = (login) => `issueCount pageInfo{hasNextPage endCursor}
+ nodes{... on PullRequest{databaseId url number title state createdAt updatedAt mergedAt closedAt
+  author{login}
+  reviews(last:50, author:"${login}"){totalCount nodes{state submittedAt url}}
+  ${REPO_FIELDS}}}`;
 
 const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 export const isValidLogin = (s) => typeof s === 'string' && LOGIN_RE.test(s);
@@ -146,9 +172,10 @@ export async function respectRateLimit(rl, o) {
  * All results of one search query (GitHub caps a search at 1000).
  * Returns { nodes, count, error, fatal, rateLimit }; on error the nodes fetched so far are kept.
  */
-export async function pageAll(q, opts = {}) {
+export async function pageAll(q, opts = {}, fields = PR_FIELDS) {
   const o = resolveOpts(opts);
   const inner = { ...opts, ...o, attempts: 3 };
+  const query = fields === PR_FIELDS ? SEARCH_QUERY : searchQuery(fields);
   const nodes = [];
   let after = null;
   let count = 0;
@@ -157,7 +184,7 @@ export async function pageAll(q, opts = {}) {
     let s = null;
     let d = null;
     for (const first of PAGE_SIZES) {
-      d = await gql(SEARCH_QUERY, { q, first, after }, inner);
+      d = await gql(query, { q, first, after }, inner);
       s = d?.data?.s ?? null;
       if (d?.data?.rateLimit) rateLimit = d.data.rateLimit;
       if (s || d?.fatal) break;
@@ -176,13 +203,11 @@ const day = (d) => d.toISOString().slice(0, 10);
 const pad = (n) => String(n).padStart(2, '0');
 
 /**
- * Every pull request authored by `username` (optionally only those updated since `since`).
- * -> { nodes: [rawPRNode], count, error: '' | string, fatal: boolean, rateLimit: {remaining, resetAt} | null }
- * `count` is GitHub's issueCount for the whole query. Never throws for GitHub-side failures: a non-empty `error`
- * means the result may be partial. Above 1000 results the query is split by `created:` year (and by month when a
- * single year still exceeds the cap).
+ * Shared body of the three user searches: validation, `query(username, since)` -> search text, paging, and the
+ * `created:` year / month split above SEARCH_CAP results. `noun` names the items in the partial-result message.
+ * -> { nodes, count, error, fatal, rateLimit }; never throws.
  */
-export async function fetchUserPRs(username, opts = {}) {
+async function searchUser(username, opts, { query, fields, noun }) {
   const o = resolveOpts(opts);
   const out = (nodes, count, error, extra = {}) => ({ nodes, count, error, fatal: false, rateLimit: null, ...extra });
   if (!isValidLogin(username)) return out([], 0, `invalid GitHub login: ${short(String(username))}`);
@@ -191,12 +216,13 @@ export async function fetchUserPRs(username, opts = {}) {
   const since = opts.since ? new Date(opts.since) : null;
   if (since && Number.isNaN(since.getTime())) return out([], 0, 'invalid since date');
   const call = { ...opts, ...o };
+  const nodeFields = typeof fields === 'function' ? fields(username) : fields;
 
   try {
-    const q = `author:${username} type:pr${since ? ` updated:>=${day(since)}` : ''}`;
+    const q = query(username, since);
     const byUrl = new Map();
     const add = (list) => { for (const n of list) if (!byUrl.has(n.url)) byUrl.set(n.url, n); };
-    const first = await pageAll(q, call);
+    const first = await pageAll(q, call, nodeFields);
     add(first.nodes);
     let { error, fatal, rateLimit } = first;
     const count = first.count;
@@ -204,16 +230,16 @@ export async function fetchUserPRs(username, opts = {}) {
     if (count > SEARCH_CAP && !fatal) { // split by year to get past the 1000-result cap
       const lastYear = o.now().getUTCFullYear() + 1;
       for (let y = FIRST_YEAR; y <= lastYear && !fatal; y++) {
-        const r = await pageAll(`${q} created:${y}-01-01..${y}-12-31`, call);
+        const r = await pageAll(`${q} created:${y}-01-01..${y}-12-31`, call, nodeFields);
         add(r.nodes);
         error ||= r.error; fatal ||= r.fatal; rateLimit = r.rateLimit ?? rateLimit;
         if (r.count <= SEARCH_CAP || r.error) continue;
         for (let m = 1; m <= 12 && !fatal; m++) {
           const end = new Date(Date.UTC(y, m, 0)).getUTCDate();
-          const mr = await pageAll(`${q} created:${y}-${pad(m)}-01..${y}-${pad(m)}-${pad(end)}`, call);
+          const mr = await pageAll(`${q} created:${y}-${pad(m)}-01..${y}-${pad(m)}-${pad(end)}`, call, nodeFields);
           add(mr.nodes);
           error ||= mr.error; fatal ||= mr.fatal; rateLimit = mr.rateLimit ?? rateLimit;
-          if (!mr.error && mr.count > SEARCH_CAP) error ||= `more than ${SEARCH_CAP} PRs created in ${y}-${pad(m)}: result is partial`;
+          if (!mr.error && mr.count > SEARCH_CAP) error ||= `more than ${SEARCH_CAP} ${noun} created in ${y}-${pad(m)}: result is partial`;
         }
       }
     }
@@ -221,6 +247,39 @@ export async function fetchUserPRs(username, opts = {}) {
   } catch (e) {
     return out([], 0, `unexpected error: ${e?.message || e}`);
   }
+}
+
+const updatedSince = (since) => (since ? ` updated:>=${day(since)}` : '');
+
+/**
+ * Every pull request authored by `username` (optionally only those updated since `since`).
+ * -> { nodes: [rawPRNode], count, error: '' | string, fatal: boolean, rateLimit: {remaining, resetAt} | null }
+ * `count` is GitHub's issueCount for the whole query. Never throws for GitHub-side failures: a non-empty `error`
+ * means the result may be partial. Above 1000 results the query is split by `created:` year (and by month when a
+ * single year still exceeds the cap).
+ */
+export async function fetchUserPRs(username, opts = {}) {
+  return searchUser(username, opts, {
+    query: (u, since) => `author:${u} type:pr${updatedSince(since)}`, fields: PR_FIELDS, noun: 'PRs',
+  });
+}
+
+/** Every issue `username` raised (optionally only those updated since `since`). Same contract as fetchUserPRs. */
+export async function fetchUserIssues(username, opts = {}) {
+  return searchUser(username, opts, {
+    query: (u, since) => `author:${u} type:issue${updatedSince(since)}`, fields: ISSUE_FIELDS, noun: 'issues',
+  });
+}
+
+/**
+ * Every pull request of someone else that `username` reviewed (optionally only PRs updated since `since`), each with
+ * that user's latest reviews (`reviews(last:50, author:…)`). Same contract as fetchUserPRs. The login is validated before it
+ * goes into the query text.
+ */
+export async function fetchUserReviews(username, opts = {}) {
+  return searchUser(username, opts, {
+    query: (u, since) => `reviewed-by:${u} type:pr -author:${u}${updatedSince(since)}`, fields: reviewFields, noun: 'reviewed PRs',
+  });
 }
 
 // ---------- REST: user lookups ----------
@@ -274,4 +333,4 @@ export async function getUserById(id, opts = {}) {
   return restUser(`/user/${n}`, opts);
 }
 
-export default { fetchUserPRs, getUser, getUserById, gql, pageAll, isValidLogin };
+export default { fetchUserPRs, fetchUserIssues, fetchUserReviews, getUser, getUserById, gql, pageAll, isValidLogin };

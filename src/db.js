@@ -2,7 +2,7 @@
 import { MongoClient } from 'mongodb';
 import { loadConfig } from './config.js';
 
-export const COLLECTIONS = ['students', 'prs', 'repos', 'owners', 'settings', 'jobs'];
+export const COLLECTIONS = ['students', 'prs', 'repos', 'owners', 'settings', 'jobs', 'contributions'];
 /** Private to /api/owner/* (SPEC addendum G): readiness scores, the owner's notes, program org lists, past outcomes. */
 export const OWNER_COLLECTIONS = ['program_scores', 'owner_notes', 'program_orgs', 'program_outcomes'];
 
@@ -21,6 +21,7 @@ export function collections(db) {
     owners: db.collection('owners'),
     settings: db.collection('settings'),
     jobs: db.collection('jobs'),
+    contributions: db.collection('contributions'), // issues raised and reviews given (SPEC addendum I1)
   };
 }
 
@@ -42,6 +43,15 @@ export async function ensureIndexes(db) {
     c.students.createIndexes([
       { key: { campus: 1, batch: 1 } },
       { key: { 'stats.osMerged': -1 } },
+      { key: { 'stats.osContributions': -1 } }, // addendum I4
+    ]),
+    c.contributions.createIndexes([
+      { key: { author: 1, kind: 1, createdAt: -1 } },
+      { key: { kind: 1, category: 1, createdAt: -1 } },
+      { key: { repoLc: 1, kind: 1 } },
+      { key: { ownerLc: 1, kind: 1 } },
+      { key: { campus: 1, batch: 1 } },
+      { key: { createdAt: 1, kind: 1 } },
     ]),
     c.repos.createIndexes([
       { key: { ownerLc: 1 } },

@@ -37,13 +37,17 @@ export function emptyStudentStats() {
   return {
     totalPrs: 0, mergedPrs: 0, osPrs: 0, osMerged: 0, osOpen: 0, osMajorMerged: 0, osRepos: 0, osOrgs: 0,
     byCategory: emptyByCategory(), firstPrAt: null, lastPrAt: null, lastOsMergedAt: null,
+    osClosed: 0, totalIssues: 0, osIssues: 0, totalReviews: 0, osReviews: 0, osContributions: 0, lastActivityAt: null,
   };
 }
 export function emptyRepoStats() {
-  return { prs: 0, merged: 0, open: 0, closed: 0, students: 0, campuses: [], firstPrAt: null, lastPrAt: null };
+  return { prs: 0, merged: 0, open: 0, closed: 0, students: 0, campuses: [], firstPrAt: null, lastPrAt: null, issues: 0, reviews: 0 };
 }
 export function emptyOwnerStats() {
-  return { repos: 0, prs: 0, merged: 0, osPrs: 0, osMerged: 0, students: 0, maxStars: 0, byCategory: emptyByCategory() };
+  return {
+    repos: 0, prs: 0, merged: 0, osPrs: 0, osMerged: 0, students: 0, maxStars: 0, byCategory: emptyByCategory(),
+    issues: 0, reviews: 0, osIssues: 0, osReviews: 0,
+  };
 }
 
 /**
@@ -186,7 +190,7 @@ export async function upsertPRs(db, student, nodes, { onlyUrls = null } = {}) {
     bulk(c.owners, [...owners.values()].map(ownerUpsertOp)),
   ]);
   await bulk(c.prs, prOps);
-  if (drifted.length) await reclassify(db, { prFilter: { repoLc: { $in: drifted } }, repoFilter: null, ctx });
+  if (drifted.length) await reclassify(db, { prFilter: { repoLc: { $in: drifted } }, repoFilter: null, contribFilter: { repoLc: { $in: drifted } }, ctx });
   // technology domain of the repos just written (their language / topics / description may have changed)
   await recomputeDomains(db, { filter: { _id: { $in: repoIds } } });
   return { prs: prs.length, repos: repos.size };
@@ -252,7 +256,11 @@ export async function pruneStalePRs(db, student, nodes) {
   }
   await c.prs.deleteMany({ author: student._id, _id: { $in: stale.map((p) => p._id) } });
   if (prIds.length || repoIds.length) {
-    await reclassify(db, { prFilter: { $or: [{ _id: { $in: prIds } }, { repoLc: { $in: repoIds } }] }, repoFilter: repoIds.length ? { _id: { $in: repoIds } } : null });
+    await reclassify(db, {
+      prFilter: { $or: [{ _id: { $in: prIds } }, { repoLc: { $in: repoIds } }] },
+      repoFilter: repoIds.length ? { _id: { $in: repoIds } } : null,
+      contribFilter: repoIds.length ? { repoLc: { $in: repoIds } } : null,
+    });
   }
   out.moved = moves.length;
   out.removed = vanished;
@@ -280,19 +288,23 @@ async function writeStats(coll, computed, empty) {
 }
 
 /**
- * Recomputes students.stats, repos.stats and owners.stats from the PRs with active:true.
- * Three $group pipelines; only documents whose stats changed are written.
+ * Recomputes students.stats, repos.stats and owners.stats from the PRs and the contributions (issues, reviews; SPEC
+ * addendum I4) with active:true. Three $group pipelines over prs, three over contributions, merged in memory; only
+ * documents whose stats changed are written.
  */
 export async function refreshAggregates(db) {
   const c = collections(db);
   const active = { $match: { active: true } };
   const opt = { allowDiskUse: true };
 
-  const [studentRows, repoRows, ownerRows] = await Promise.all([
+  const contribs = db.collection('contributions');
+  const ISSUE = eq('$kind', 'issue');
+  const REVIEW = eq('$kind', 'review');
+  const [studentRows, repoRows, ownerRows, cStudentRows, cRepoRows, cOwnerRows] = await Promise.all([
     c.prs.aggregate([active, { $group: {
       _id: '$author',
       totalPrs: { $sum: 1 }, mergedPrs: sumIf(MERGED), osPrs: sumIf(OS), osMerged: sumIf({ $and: [OS, MERGED] }),
-      osOpen: sumIf({ $and: [OS, eq('$state', 'open')] }),
+      osOpen: sumIf({ $and: [OS, eq('$state', 'open')] }), osClosed: sumIf({ $and: [OS, eq('$state', 'closed')] }),
       osMajorMerged: sumIf({ $and: [OS, MERGED, eq('$tier', 'major')] }),
       osRepos: { $addToSet: { $cond: [OS, '$repoLc', null] } },
       osOrgs: { $addToSet: { $cond: [OS, '$ownerLc', null] } },
@@ -300,7 +312,7 @@ export async function refreshAggregates(db) {
       firstPrAt: { $min: '$createdAt' }, lastPrAt: { $max: '$createdAt' },
       lastOsMergedAt: { $max: { $cond: [{ $and: [OS, MERGED] }, '$mergedAt', null] } },
     } }, { $project: {
-      totalPrs: 1, mergedPrs: 1, osPrs: 1, osMerged: 1, osOpen: 1, osMajorMerged: 1, firstPrAt: 1, lastPrAt: 1, lastOsMergedAt: 1,
+      totalPrs: 1, mergedPrs: 1, osPrs: 1, osMerged: 1, osOpen: 1, osClosed: 1, osMajorMerged: 1, firstPrAt: 1, lastPrAt: 1, lastOsMergedAt: 1,
       ...Object.fromEntries(CATEGORIES.map((k) => [`c_${k}`, 1])),
       osRepos: { $size: { $setDifference: ['$osRepos', [null]] } },
       osOrgs: { $size: { $setDifference: ['$osOrgs', [null]] } },
@@ -319,21 +331,57 @@ export async function refreshAggregates(db) {
       repos: { $size: '$repos' }, prs: 1, merged: 1, osPrs: 1, osMerged: 1, students: { $size: '$students' }, maxStars: 1,
       ...Object.fromEntries(CATEGORIES.map((k) => [`c_${k}`, 1])),
     } }], opt).toArray(),
+    contribs.aggregate([active, { $group: {
+      _id: '$author',
+      issues: sumIf(ISSUE), osIssues: sumIf({ $and: [OS, ISSUE] }), reviews: sumIf(REVIEW), osReviews: sumIf({ $and: [OS, REVIEW] }),
+      lastAt: { $max: { $cond: [REVIEW, { $ifNull: ['$lastReviewedAt', '$createdAt'] }, '$createdAt'] } },
+    } }], opt).toArray(),
+    contribs.aggregate([active, { $group: { _id: '$repoLc', issues: sumIf(ISSUE), reviews: sumIf(REVIEW) } }], opt).toArray(),
+    contribs.aggregate([active, { $group: {
+      _id: '$ownerLc',
+      issues: sumIf(ISSUE), reviews: sumIf(REVIEW), osIssues: sumIf({ $and: [OS, ISSUE] }), osReviews: sumIf({ $and: [OS, REVIEW] }),
+    } }], opt).toArray(),
   ]);
+  const cStudents = new Map(cStudentRows.map((g) => [g._id, g]));
+  const cRepos = new Map(cRepoRows.map((g) => [g._id, g]));
+  const cOwners = new Map(cOwnerRows.map((g) => [g._id, g]));
+  const later = (a, b) => (!a ? (b ?? null) : !b ? a : (b > a ? b : a));
 
+  // PR part first (key order is fixed by the empty*Stats constructors, so unchanged stats compare equal)
   const students = new Map(studentRows.map((g) => [g._id, {
+    ...emptyStudentStats(),
     totalPrs: g.totalPrs, mergedPrs: g.mergedPrs, osPrs: g.osPrs, osMerged: g.osMerged, osOpen: g.osOpen, osMajorMerged: g.osMajorMerged,
     osRepos: g.osRepos, osOrgs: g.osOrgs, byCategory: byCat(g),
     firstPrAt: g.firstPrAt ?? null, lastPrAt: g.lastPrAt ?? null, lastOsMergedAt: g.lastOsMergedAt ?? null,
+    osClosed: g.osClosed, osContributions: g.osPrs, lastActivityAt: g.lastPrAt ?? null,
   }]));
+  for (const [id, g] of cStudents) {
+    const s = students.get(id) ?? emptyStudentStats();
+    s.totalIssues = g.issues; s.osIssues = g.osIssues; s.totalReviews = g.reviews; s.osReviews = g.osReviews;
+    s.osContributions = s.osPrs + g.osIssues + g.osReviews;
+    s.lastActivityAt = later(s.lastActivityAt, g.lastAt ?? null);
+    students.set(id, s);
+  }
   const repos = new Map(repoRows.map((g) => [g._id, {
+    ...emptyRepoStats(),
     prs: g.prs, merged: g.merged, open: g.open, closed: g.closed, students: g.students,
     campuses: [...g.campuses].sort(), firstPrAt: g.firstPrAt ?? null, lastPrAt: g.lastPrAt ?? null,
   }]));
+  for (const [id, g] of cRepos) {
+    const s = repos.get(id) ?? emptyRepoStats();
+    s.issues = g.issues; s.reviews = g.reviews;
+    repos.set(id, s);
+  }
   const owners = new Map(ownerRows.map((g) => [g._id, {
+    ...emptyOwnerStats(),
     repos: g.repos, prs: g.prs, merged: g.merged, osPrs: g.osPrs, osMerged: g.osMerged, students: g.students,
     maxStars: g.maxStars ?? 0, byCategory: byCat(g),
   }]));
+  for (const [id, g] of cOwners) {
+    const s = owners.get(id) ?? emptyOwnerStats();
+    s.issues = g.issues; s.reviews = g.reviews; s.osIssues = g.osIssues; s.osReviews = g.osReviews;
+    owners.set(id, s);
+  }
 
   await Promise.all([
     writeStats(c.students, students, emptyStudentStats),

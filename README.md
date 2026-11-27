@@ -1,7 +1,7 @@
 # NST Open Source Status
 
-Public dashboard of open-source work (GitHub pull requests) by Newton School of Technology students, with a
-password-protected admin area. Production: <https://oss.nstsdc.org>.
+Public dashboard of open-source work (GitHub pull requests in every state, issues raised and reviews given) by
+Newton School of Technology students, with a password-protected admin area. Production: <https://oss.nstsdc.org>.
 
 - Node 22 (ESM), Express, MongoDB (official driver). No build step: `public/` is served as is.
 - One container image serves the API and the frontend and also runs the scripts.
@@ -109,8 +109,8 @@ terminal (below). How the scheduler behaves:
 node scripts/sync.js [--users a,b] [--full] [--limit N] [--campus C] [--batch YYYY] [--concurrency N]
 ```
 
-- Default: every active student. Students whose history is already loaded get an incremental fetch (PRs updated
-  since their last successful sync minus 2 days). Students still `pending` get their full history. Students
+- Default: every active student. Students whose history is already loaded get an incremental fetch (PRs, issues
+  and reviewed PRs updated since their last successful sync minus 2 days). Students still `pending` get their full history. Students
   whose account was not found are skipped until an admin re-runs their backfill.
 - `--full`: re-read the whole history of the selected students.
 - `--users`, `--campus`, `--batch`, `--limit`: restrict the run.
@@ -125,6 +125,34 @@ node scripts/sync.js [--users a,b] [--full] [--limit N] [--campus C] [--batch YY
   deactivation made in the admin area during a long run is never undone by that run.
 - Requires `GITHUB_TOKEN`. Exit code 1 only on total failure (no token, database unreachable, or every student
   failed), 2 on bad arguments. A failed student keeps its old `lastSyncedAt`, so the next run retries the same window.
+
+### Contribution types
+
+Three kinds of work are stored for every tracked student:
+
+- Pull requests the student opened, in every state: open, merged and closed without merge (collection `prs`).
+- Issues the student raised (collection `contributions`, `kind: 'issue'`).
+- Reviews the student gave on pull requests of other people, one document per student per reviewed pull request
+  (collection `contributions`, `kind: 'review'`). The verdict is the student's latest approval, change request or
+  dismissal, else "commented". Pending reviews and reviews on the student's own pull requests are not counted.
+
+Items in private repositories are never stored. Issues and reviews are classified like a pull request by the same
+student to the same repository, so repo and organisation overrides apply to them too; there are no per-item
+overrides for them. An item counts in a date range by the date it was opened (issues) or first reviewed (reviews).
+Comments, discussions and direct commits are not counted.
+
+Each student is fetched with three GitHub searches: pull requests, issues and reviewed pull requests. Issues and
+reviews are fetched after the pull requests, with their own fetch time (`contribSyncedAt`, admin only). A student
+without that time gets the full history of both, so the first nightly run after this release backfills issues and
+reviews for every student by itself; later runs are incremental. A failed issue or review search is logged, counted
+in the run summary ("contribution fetches failed") and retried in full or from the old window by the next run; it
+does not mark the student's pull request fetch as failed. After 25 students in a row whose issue or review search
+failed, those searches are skipped for the rest of the run (logged once, counted as "skipped" in the summary); pull
+requests are still fetched, and the skipped students are fetched again by the next run.
+
+The GitHub request budget is about three times larger than before: three searches per student per night instead of
+one, and more on the backfill night for students with long histories. A full nightly run over every student may
+therefore wait once for GitHub's hourly rate limit; the run continues by itself when the limit resets.
 
 ### Old work of new students: `scripts/backfill.js`
 

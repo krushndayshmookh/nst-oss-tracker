@@ -8,7 +8,7 @@ import { setQuery } from '../lib/router.js';
 import { h, pageHead, card, table, tierBadge, fmt } from '../lib/ui.js';
 import { lineChart } from '../lib/charts.js';
 import {
-  getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeIsOpen, isPastRange, link, campusLink, repoHref, orgHref, put,
+  getMeta, hasRanges, hasContributions, rangeParams, rangeControl, rangeLine, rangeIsOpen, isPastRange, link, campusLink, repoHref, orgHref, put,
 } from './common.js';
 import {
   scaleOf, scaleToggle, unknownToggle, rate, pctVal, smallMark, campusYearTable, campusCsv, downloadButton, CAMPUS_SORT_DEFAULT,
@@ -175,9 +175,10 @@ export default async function (el, ctx) {
     h('div', { class: 'section-head' }, h('h2', null, 'Campus by year'),
       h('div', { class: 'toolbar' }, scaleToggle(ctx, 'table', { two: ['Rates', 'Counts'] }))),
     card({ flush: true },
-      campusYearTable(data, { ctx, past, rateMode, sort, order, onSort: (s, o) => setQuery({ sort: s === CAMPUS_SORT_DEFAULT && o === 'desc' ? '' : s, order: s === CAMPUS_SORT_DEFAULT && o === 'desc' ? '' : o }) }),
+      campusYearTable(data, { ctx, past, rateMode, sort, order, contrib: hasContributions(meta), onSort: (s, o) => setQuery({ sort: s === CAMPUS_SORT_DEFAULT && o === 'desc' ? '' : s, order: s === CAMPUS_SORT_DEFAULT && o === 'desc' ? '' : o }) }),
       h('p', { class: 'card-note card-note-pad' },
         rateMode ? 'Student columns are shares of the tracked students; pull-request columns are per 100 tracked students. Hover a figure for its count. ' : 'Counts, with the two headline rates beside them. ',
+        rateMode && hasContributions(meta) ? 'Open PRs, Issues and Reviews are counts. ' : null,
         'Sorting orders the campuses by their total and the years within each campus.')));
 
   // ── 6. concentration ──

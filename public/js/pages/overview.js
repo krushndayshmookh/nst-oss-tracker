@@ -8,7 +8,8 @@ import {
 } from '../lib/ui.js';
 import { lineChart, barChart, doughnutChart } from '../lib/charts.js';
 import {
-  getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeSentence, rangeIsOpen, isPastRange, activityCard, link, studentCell, repoHref, orgHref, csvButton, opts, clean, put
+  getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeSentence, rangeIsOpen, isPastRange, activityCard, link, studentCell, repoHref, orgHref, csvButton, opts, clean, put,
+  hasContributions, contribHref,
 } from './common.js';
 import {
   scaleOf, scaleToggle, campusYearTable, yearMetric, cohortLabel, campusColor, rate, pctVal, CAMPUS_SORT_DEFAULT, AXIS,
@@ -59,6 +60,7 @@ export default async function (el, ctx) {
   const filtered = Boolean(cohort.campus || cohort.year);
   const scope = [cohort.campus, cohort.year].filter(Boolean).join(', ');
   const campusCount = (meta.campuses || []).filter((c) => c !== 'Unknown').length;
+  const contrib = hasContributions(meta);
 
   // ── head, range, filters ──
   const open = rangeIsOpen(overview.range);
@@ -70,7 +72,7 @@ export default async function (el, ctx) {
       lede: [
         `${fmt.num(meta.counts ? meta.counts.students : students.tracked)} students tracked across ${campusCount} campuses. `,
         'The headline counts pull requests merged into established public projects; coursework, practice repositories and personal projects are shown separately. ',
-        ranged ? 'Every figure on this page counts pull requests opened or merged in the period above.' : null,
+        ranged ? (hasContributions(meta) ? 'Every figure on this page counts pull requests opened or merged, issues raised and reviews given in the period above.' : 'Every figure on this page counts pull requests opened or merged in the period above.') : null,
       ],
       range: rangeLine(overview.range),
       actions: [csvButton('/export/students.csv', { ...cohort, ...range })],
@@ -105,6 +107,29 @@ export default async function (el, ctx) {
     statCard({ label: 'Open-source PRs awaiting review', value: prs.osOpen, sub: ranged ? 'opened in the period, open now' : 'open now', href: link('/prs', { ...cohort, state: 'open' }, ctx) }),
   ));
 
+  // ── every kind of open-source contribution (SPEC addendum I) ──
+  if (contrib) {
+    const c = overview.contributions || {};
+    const prOpen = c.osPrsOpen ?? prs.osOpen ?? 0;
+    const prMerged = c.osPrsMerged ?? prs.osMerged ?? 0;
+    const prClosed = c.osPrsClosed ?? Math.max(0, (prs.osPrs || 0) - (prs.osMerged || 0) - (prs.osOpen || 0));
+    const anyStudents = students.withOsContribution ?? 0;
+    put(el,
+      h('div', { class: 'section-head' }, h('h2', null, 'Open-source contributions'),
+        h('span', { class: 'muted' }, ranged ? 'Pull requests in every state, issues raised and reviews given in the period. ' : 'Pull requests in every state, issues raised and reviews given. ',
+          h('a', { href: link('/about', {}, ctx) }, 'What is counted'))),
+      h('div', { class: 'cards' },
+        statCard({ label: 'Merged PRs', value: prMerged, href: contribHref('pr', { ...cohort, state: 'merged' }, ctx) }),
+        statCard({ label: 'Open PRs', value: prOpen, sub: 'still open', href: contribHref('pr', { ...cohort, state: 'open' }, ctx) }),
+        statCard({ label: 'Closed without merge', value: prClosed, href: contribHref('pr', { ...cohort, state: 'closed' }, ctx) }),
+        statCard({ label: 'Issues raised', value: c.osIssues ?? 0, sub: `${fmt.num(c.osIssuesOpen ?? 0)} open, ${fmt.num(c.osIssuesClosed ?? 0)} closed`, href: contribHref('issue', cohort, ctx) }),
+        statCard({ label: 'Reviews given', value: c.osReviews ?? 0, sub: `${fmt.num(c.osApprovals ?? 0)} approvals, ${fmt.num(c.osChangesRequested ?? 0)} with changes requested`, href: contribHref('review', cohort, ctx) }),
+        statCard({
+          label: 'Students with any contribution', value: anyStudents, sub: `${fmt.pct(anyStudents, students.tracked)} of ${fmt.num(students.tracked)} tracked`,
+          href: link('/students', { ...cohort, hasContribution: '1' }, ctx), title: 'Students with an open-source pull request, issue or review',
+        })));
+  }
+
   // ── trend + funnel ──
   const monthly = Array.isArray(overview.monthly) && overview.monthly.length
     ? overview.monthly
@@ -122,7 +147,7 @@ export default async function (el, ctx) {
     const how = change >= 200 ? `${(a / b).toFixed(1)} times the 12 before` : `${change >= 0 ? 'up' : 'down'} ${Math.abs(change)}% on the 12 before`;
     trendNote = `${fmt.num(a)} merged in the last 12 complete months, ${how} (${fmt.num(b)}).`;
   }
-  const trendCard = card({ title: 'Open-source pull requests by month', note: monthly.length ? `${fmt.month(monthly[0].month)} to ${fmt.month(monthly[monthly.length - 1].month)}` : null },
+  const trendCard = card({ title: contrib ? 'Open-source contributions by month' : 'Open-source pull requests by month', note: monthly.length ? `${fmt.month(monthly[0].month)} to ${fmt.month(monthly[monthly.length - 1].month)}` : null },
     h('div', { class: 'chart-box' }, trendCanvas),
     h('p', { class: 'card-note' },
       trendNote, trendNote ? ' ' : null,
@@ -168,7 +193,7 @@ export default async function (el, ctx) {
   put(el, card({ flush: true },
     mixLegend(),
     campusYearTable(campuses, {
-      ctx, past, mix: true, period, sort: csort, order: corder,
+      ctx, past, mix: true, period, sort: csort, order: corder, contrib,
       onSort: (s, o) => { const d = s === CAMPUS_SORT_DEFAULT && o === 'desc'; setQuery({ csort: d ? '' : s, corder: d ? '' : o }); },
     }),
     h('p', { class: 'card-note card-note-pad' }, 'Sorted by the share of students with a merged open-source pull request unless you sort otherwise; campuses are ordered by their total.')));
@@ -255,8 +280,12 @@ export default async function (el, ctx) {
     series: [
       { label: 'Opened', data: monthly.map((m) => m.osOpened), color: 1 },
       { label: 'Merged', data: monthly.map((m) => m.osMerged), color: 'merged' },
+      ...(contrib ? [
+        { label: 'Issues raised', data: monthly.map((m) => m.osIssues ?? 0), color: 3 },
+        { label: 'Reviews given', data: monthly.map((m) => m.osReviews ?? 0), color: 4 },
+      ] : []),
     ],
-    label: `Open-source pull requests opened and merged per month. ${trendNote || ''}`,
+    label: `${contrib ? 'Open-source pull requests opened and merged, issues raised and reviews given per month.' : 'Open-source pull requests opened and merged per month.'} ${trendNote || ''}`,
   }));
   if (cs.years.length && cs.names.length) {
     charts.push(barChart(campusCanvas, {

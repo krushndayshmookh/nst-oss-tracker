@@ -180,11 +180,14 @@ async function flush(coll, ops) {
 }
 
 /**
- * Recomputes category / tier / reason for the PRs matching `prFilter` and the repos matching `repoFilter`
- * (`null` skips that collection). Only changed documents are written. Does NOT refresh aggregates.
- * Returns { prs, repos, prsChanged, reposChanged } (examined / changed counts).
+ * Recomputes category / tier / reason for the PRs matching `prFilter`, the contributions (issues, reviews; SPEC addendum
+ * I4) matching `contribFilter` and the repos matching `repoFilter` (`null` skips that collection). `contribFilter`
+ * omitted: `{}` when `prFilter` is `{}` (full recompute), otherwise contributions are skipped.
+ * Only changed documents are written. Does NOT refresh aggregates.
+ * Returns { prs, repos, contributions, prsChanged, reposChanged, contributionsChanged } (examined / changed counts).
  */
-export async function reclassify(db, { prFilter = {}, repoFilter = {}, ctx = null } = {}) {
+export async function reclassify(db, { prFilter = {}, repoFilter = {}, contribFilter, ctx = null } = {}) {
+  if (contribFilter === undefined) contribFilter = prFilter && Object.keys(prFilter).length === 0 ? {} : null;
   const c = collections(db);
   ctx ??= await loadContext(db);
   const ownerOverrides = new Map();
@@ -192,7 +195,7 @@ export async function reclassify(db, { prFilter = {}, repoFilter = {}, ctx = nul
     if (o.override) ownerOverrides.set(o._id, o.override);
   }
   const repoProj = { name: 1, ownerLc: 1, ownerType: 1, stars: 1, isFork: 1, override: 1, category: 1, tier: 1, reason: 1 };
-  const result = { prs: 0, repos: 0, prsChanged: 0, reposChanged: 0 };
+  const result = { prs: 0, repos: 0, contributions: 0, prsChanged: 0, reposChanged: 0, contributionsChanged: 0 };
 
   // PRs first (their repos are needed, whether or not those match repoFilter)
   const repoMap = new Map();
@@ -227,11 +230,38 @@ export async function reclassify(db, { prFilter = {}, repoFilter = {}, ctx = nul
     await flush(c.prs, ops);
   }
 
+  // contributions (issues raised, reviews given): same rule as a PR by this author on this repo, no per-item override
+  if (contribFilter) {
+    const contribs = db.collection('contributions');
+    const items = await contribs.find(contribFilter, {
+      projection: { author: 1, repoLc: 1, ownerLc: 1, ownerType: 1, stars: 1, category: 1, tier: 1, reason: 1 },
+    }).toArray();
+    result.contributions = items.length;
+    const missing = [...new Set(items.map((p) => p.repoLc))].filter((id) => !repoMap.has(id));
+    for (let i = 0; i < missing.length; i += 5000) {
+      for await (const r of c.repos.find({ _id: { $in: missing.slice(i, i + 5000) } }, { projection: repoProj })) repoMap.set(r._id, r);
+    }
+    const ops = [];
+    for (const p of items) {
+      const r = repoMap.get(p.repoLc);
+      const stars = r ? r.stars : p.stars;
+      const res = classify({
+        repo: p.repoLc, ownerType: r ? r.ownerType : p.ownerType, stars, isFork: r ? r.isFork : false,
+        repoOverride: r?.override ?? null, ownerOverride: ownerOverrides.get(p.ownerLc) ?? null, author: p.author,
+      }, ctx);
+      if (res.category !== p.category || res.tier !== (p.tier ?? null) || res.reason !== p.reason || stars !== p.stars) {
+        ops.push({ updateOne: { filter: { _id: p._id }, update: { $set: { ...res, stars } } } });
+      }
+    }
+    result.contributionsChanged = ops.length;
+    await flush(contribs, ops);
+  }
+
   if (repoFilter) {
     const ops = [];
     const full = Object.keys(repoFilter).length === 0;
     const source = full && repoMap.size && prFilter && Object.keys(prFilter).length === 0
-      ? repoMap.values()
+      ? [...repoMap.values()]
       : c.repos.find(repoFilter, { projection: repoProj });
     for await (const r of source) {
       result.repos++;
@@ -249,10 +279,10 @@ export async function reclassify(db, { prFilter = {}, repoFilter = {}, ctx = nul
   return result;
 }
 
-/** Recomputes every PR and repo with the current rules, the technology domain of every repo (SPEC addendum H), then all aggregates. */
+/** Recomputes every PR, contribution and repo with the current rules, the technology domain of every repo (SPEC addendum H), then all aggregates. */
 export async function reclassifyAll(db) {
   invalidateContext();
-  const result = await reclassify(db, { prFilter: {}, repoFilter: {} });
+  const result = await reclassify(db, { prFilter: {}, repoFilter: {}, contribFilter: {} });
   const { ensureDomains } = await import('./tech.js');
   await ensureDomains(db, { force: true });
   await refreshAggregates(db);

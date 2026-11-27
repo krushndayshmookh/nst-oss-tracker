@@ -163,8 +163,8 @@ export async function repoMetaJob(db, params = {}, ctx = {}, opts = {}) {
     log(`technology domains: ${d.changed} of ${d.repos} repos changed`);
   }
   if (reclass.length) {
-    const r = await reclassify(db, { prFilter: { repoLc: { $in: reclass } }, repoFilter: { _id: { $in: reclass } } });
-    log(`stars changed on ${reclass.length} repos: ${r.prsChanged} PRs and ${r.reposChanged} repos reclassified`);
+    const r = await reclassify(db, { prFilter: { repoLc: { $in: reclass } }, repoFilter: { _id: { $in: reclass } }, contribFilter: { repoLc: { $in: reclass } } });
+    log(`stars changed on ${reclass.length} repos: ${r.prsChanged} PRs, ${r.contributionsChanged ?? 0} contributions and ${r.reposChanged} repos reclassified`);
   }
   if (touched.length) await refreshAggregates(db);
   log(`done: ${summary.ok} ok, ${summary.renamed} renamed, ${summary.missing} missing, ${summary.private} private, ${summary.failed} failed, ${summary.requests} requests`);

@@ -184,8 +184,8 @@ export function adminRouter({ db, config, auth, github = null }) {
   /** A new student may own repos other students already sent PRs to: those become peer_repo. */
   async function afterStudentSetChanged(ids) {
     invalidateContext();
-    const res = await reclassify(db, { prFilter: { ownerLc: { $in: ids } }, repoFilter: { ownerLc: { $in: ids } } });
-    if (res.prsChanged || res.reposChanged) await refreshAggregates(db);
+    const res = await reclassify(db, { prFilter: { ownerLc: { $in: ids } }, repoFilter: { ownerLc: { $in: ids } }, contribFilter: { ownerLc: { $in: ids } } });
+    if (res.prsChanged || res.reposChanged || res.contributionsChanged) await refreshAggregates(db);
   }
 
   r.post('/students', async (req, res) => {
@@ -305,7 +305,9 @@ export function adminRouter({ db, config, auth, github = null }) {
       await c.students.updateOne({ _id: old._id }, { $set: set });
       if ('campus' in set || 'batch' in set) {
         cohortChanged = true;
-        await c.prs.updateMany({ author: old._id }, { $set: { campus: set.campus ?? old.campus, batch: 'batch' in set ? set.batch : (old.batch ?? null) } });
+        const cohort = { campus: set.campus ?? old.campus, batch: 'batch' in set ? set.batch : (old.batch ?? null) };
+        await c.prs.updateMany({ author: old._id }, { $set: cohort });
+        await db.collection('contributions').updateMany({ author: old._id }, { $set: cohort });
       }
     }
     if (docs.length) {
@@ -345,7 +347,9 @@ export function adminRouter({ db, config, auth, github = null }) {
     await c.students.updateOne({ _id: s._id }, { $set: set });
     const next = { ...s, ...set };
     if (next.campus !== s.campus || (next.batch ?? null) !== (s.batch ?? null) || (next.active !== false) !== (s.active !== false)) {
-      await c.prs.updateMany({ author: s._id }, { $set: { campus: next.campus, batch: next.batch ?? null, active: next.active !== false } });
+      const denorm = { campus: next.campus, batch: next.batch ?? null, active: next.active !== false };
+      await c.prs.updateMany({ author: s._id }, { $set: denorm });
+      await db.collection('contributions').updateMany({ author: s._id }, { $set: denorm });
       await refreshAggregates(db);
     }
     res.json({ student: adminStudentOut(await c.students.findOne({ _id: s._id })) });
@@ -355,17 +359,21 @@ export function adminRouter({ db, config, auth, github = null }) {
     const s = await studentOr404(req.params.username);
     const purge = flag(req.query, 'purge') === true;
     let prsRemoved = 0;
+    let contributionsRemoved = 0;
     if (purge) {
       prsRemoved = (await c.prs.deleteMany({ author: s._id })).deletedCount;
+      contributionsRemoved = (await db.collection('contributions').deleteMany({ author: s._id })).deletedCount;
       await c.students.deleteOne({ _id: s._id });
       invalidateContext();
-      await reclassify(db, { prFilter: { ownerLc: { $in: [s._id, lc(s.username)] } }, repoFilter: { ownerLc: { $in: [s._id, lc(s.username)] } } });
+      const owned = { ownerLc: { $in: [s._id, lc(s.username)] } };
+      await reclassify(db, { prFilter: owned, repoFilter: owned, contribFilter: owned });
     } else {
       await c.students.updateOne({ _id: s._id }, { $set: { active: false } });
       await c.prs.updateMany({ author: s._id }, { $set: { active: false } });
+      await db.collection('contributions').updateMany({ author: s._id }, { $set: { active: false } });
     }
     await refreshAggregates(db);
-    res.json({ ok: true, purged: purge, prsRemoved });
+    res.json({ ok: true, purged: purge, prsRemoved, contributionsRemoved });
   });
 
   r.post('/students/:username/backfill', async (req, res) => {
@@ -404,9 +412,9 @@ export function adminRouter({ db, config, auth, github = null }) {
     const set = overrideBody(req.body, ['include', 'exclude']);
     const upd = await c.repos.updateOne({ _id: id }, { $set: set });
     if (!upd.matchedCount) throw notFound('repo not found');
-    const result = await reclassify(db, { prFilter: { repoLc: id }, repoFilter: { _id: id } });
+    const result = await reclassify(db, { prFilter: { repoLc: id }, repoFilter: { _id: id }, contribFilter: { repoLc: id } });
     await refreshAggregates(db);
-    res.json({ ok: true, repo: repoOut(await c.repos.findOne({ _id: id })), affected: { prs: result.prs, repos: result.repos } });
+    res.json({ ok: true, repo: repoOut(await c.repos.findOne({ _id: id })), affected: { prs: result.prs, repos: result.repos, contributions: result.contributions } });
   });
 
   r.post('/owners/override', async (req, res) => {
@@ -415,9 +423,9 @@ export function adminRouter({ db, config, auth, github = null }) {
     const set = overrideBody(req.body, ['include', 'exclude', 'nst_internal']);
     const upd = await c.owners.updateOne({ _id: id }, { $set: set });
     if (!upd.matchedCount) throw notFound('owner not found');
-    const result = await reclassify(db, { prFilter: { ownerLc: id }, repoFilter: { ownerLc: id } });
+    const result = await reclassify(db, { prFilter: { ownerLc: id }, repoFilter: { ownerLc: id }, contribFilter: { ownerLc: id } });
     await refreshAggregates(db);
-    res.json({ ok: true, org: orgOut(await c.owners.findOne({ _id: id })), affected: { prs: result.prs, repos: result.repos } });
+    res.json({ ok: true, org: orgOut(await c.owners.findOne({ _id: id })), affected: { prs: result.prs, repos: result.repos, contributions: result.contributions } });
   });
 
   r.get('/overrides', async (req, res) => {

@@ -111,7 +111,7 @@ test('GET /api/campuses: rows, subtotals, rates, tier and category mix, funnel, 
     [['ADYPU', yearLabel(2025), 2025, 2], ['RU', yearLabel(2026), 2026, 1], ['RU', yearLabel(2025), 2025, 3], ['SVYASA', yearLabel(2026), 2026, 1], ['Unknown', 'Unknown', null, 1]]);
 
   const ru = body.totals.find((t) => t.campus === 'RU');
-  assert.deepEqual(Object.keys(ru), ['campus', 'year', 'batch', ...COUNTS, 'byCategory', 'smallCohort',
+  assert.deepEqual(Object.keys(ru), ['campus', 'year', 'batch', ...COUNTS, 'byCategory', 'osOpen', 'osIssues', 'osReviews', 'withOsIssue', 'withOsReview', 'smallCohort',
     'withAnyPrPct', 'withOsPrPct', 'withOsMergedPct', 'withMajorMergedPct', 'totalPrsPer100', 'osPrsPer100', 'osMergedPer100', 'osMajorMergedPer100',
     'tierMix', 'funnel', 'distribution', 'previous', 'delta', 'topOrgs', 'topRepos']);
   assert.deepEqual(COUNTS.map((k) => ru[k]), [4, 3, 3, 3, 2, 16, 15, 15, 13],

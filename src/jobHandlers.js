@@ -8,6 +8,7 @@
 import { collections } from './db.js';
 import { invalidateContext, reclassify } from './classify.js';
 import { pruneStalePRs, refreshAggregates, upsertPRs } from './ingest.js';
+import { pruneStaleContributions, upsertContributions } from './contributions.js';
 import * as defaultGithub from './github.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -24,6 +25,8 @@ function emptySummary() {
     students: 0, ok: 0, failed: 0, prs: 0, renamed: 0, notFound: 0, skipped: 0,
     // addendum C per-run numbers
     studentsChecked: 0, studentsFailed: 0, prsNew: 0, prsUpdated: 0, newMerged: 0, rateLimitRemaining: null, durationMs: 0,
+    // addendum I3: issues raised and reviews given
+    issues: 0, issuesNew: 0, reviews: 0, reviewsNew: 0, contribFailed: 0, contribSkipped: 0,
   };
 }
 
@@ -96,7 +99,7 @@ async function applyRename(env, student, newLogin) {
   invalidateContext();
   // PRs other students sent to repos of the new login are peer_repo now
   const ids = [lc(newLogin)];
-  await reclassify(env.db, { prFilter: { ownerLc: { $in: ids } }, repoFilter: { ownerLc: { $in: ids } } }).catch((e) => env.log(`${student._id}: reclassify after rename failed: ${e?.message || e}`));
+  await reclassify(env.db, { prFilter: { ownerLc: { $in: ids } }, repoFilter: { ownerLc: { $in: ids } }, contribFilter: { ownerLc: { $in: ids } } }).catch((e) => env.log(`${student._id}: reclassify after rename failed: ${e?.message || e}`));
   env.log(`${student._id}: GitHub login changed ${old} -> ${newLogin}`);
 }
 
@@ -167,13 +170,98 @@ async function diffNodes(env, nodes, { full }) {
   return out;
 }
 
+/** The two contribution kinds (addendum I3): kind, github function, summary key. */
+const CONTRIB_KINDS = [['issue', 'fetchUserIssues', 'issues'], ['review', 'fetchUserReviews', 'reviews']];
+
+/**
+ * Issues raised and reviews given by one student, after the PR part ended without error (addendum I3). Full fetch when
+ * the PR fetch was full or the student has no contribSyncedAt, else incremental from contribSyncedAt - OVERLAP_DAYS.
+ * A missing function on env.github skips that kind. Errors are counted in r (contribFailed), never change r.outcome;
+ * contribSyncedAt moves only when both kinds were fetched without error. A fatal error sets r.fatal (the run aborts).
+ * After MAX_CONSECUTIVE_FAILURES students in a row failed here, runAll sets env.contribOff: the searches are skipped
+ * for the rest of the run (r.contribSkipped = 1, contribSyncedAt not moved).
+ * -> false when the student was removed while in flight (nothing more to do), else true.
+ */
+async function fetchContributions(env, student, r, { full, startedAt }) {
+  const { c, github } = env;
+  if (env.contribOff) { r.contribSkipped = 1; return true; }
+  const synced = student.contribSyncedAt ? new Date(student.contribSyncedAt) : null;
+  const cfull = full || !synced || Number.isNaN(synced.getTime());
+  const since = cfull ? undefined : new Date(synced.getTime() - OVERLAP_DAYS * DAY_MS);
+  const current = () => c.students.findOne({ _id: student._id }, { projection: { campus: 1, batch: 1, active: 1 } });
+  let fetchedKinds = 0;
+  let failed = false;
+  for (const [kind, fn, key] of CONTRIB_KINDS) {
+    if (typeof github[fn] !== 'function') continue;
+    let res;
+    try {
+      res = await github[fn](student.username, { ...env.gh, since });
+      r.rateLimit = res.rateLimit ?? r.rateLimit;
+      const nodes = res.nodes || [];
+      if (nodes.length) {
+        // same in-flight rule as the PR path: campus / batch / active as stored NOW, checked again after the write
+        const before = await current();
+        if (!before) {
+          env.log(`${student._id}: removed while the run was in flight, nothing saved`);
+          return false;
+        }
+        Object.assign(student, { campus: before.campus, batch: before.batch ?? null, active: before.active !== false });
+        const saved = await upsertContributions(env.db, student, kind, nodes);
+        const after = await current();
+        if (!after) {
+          await c.contributions.deleteMany({ author: student._id });
+          await c.prs.deleteMany({ author: student._id });
+          env.log(`${student._id}: removed while the run was in flight, nothing saved`);
+          return false;
+        }
+        const same = (after.campus ?? 'Unknown') === (student.campus ?? 'Unknown') && (after.batch ?? null) === (student.batch ?? null)
+          && (after.active !== false) === (student.active !== false);
+        if (!same) {
+          Object.assign(student, { campus: after.campus, batch: after.batch ?? null, active: after.active !== false });
+          await c.contributions.updateMany({ author: student._id }, { $set: { campus: after.campus ?? 'Unknown', batch: after.batch ?? null, active: after.active !== false } });
+        }
+        r[key] += saved.contributions;
+        r[`${key}New`] += saved.added;
+      }
+      if (!res.error && cfull) {
+        const expected = Number(res.count);
+        const returned = new Set(nodes.map((n) => n?.url).filter(Boolean)).size;
+        const complete = !Number.isFinite(expected) || returned >= expected - Math.max(3, Math.ceil(expected * 0.05));
+        if (!complete) env.log(`${student._id}: GitHub reported ${expected} ${key} but returned ${returned}: stale ${key} are not removed in this run`);
+        else {
+          const pruned = await pruneStaleContributions(env.db, student, kind, nodes);
+          if (pruned.skipped) env.log(`${student._id}: stale ${key} are not removed in this run (${pruned.skipped})`);
+          else if (pruned.removed) env.log(`${student._id}: ${pruned.removed} ${key} no longer on GitHub removed`);
+        }
+      }
+    } catch (e) { // database or programming error: the PR outcome stands
+      res = { error: `unexpected: ${e?.message || e}`, fatal: false };
+    }
+    if (res.error) {
+      failed = true;
+      env.log(`${student._id}: ${key} failed: ${res.error}`);
+      if (res.fatal) { r.fatal = true; r.fatalError ??= `${key}: ${res.error}`; break; }
+      continue;
+    }
+    fetchedKinds++;
+  }
+  if (failed) r.contribFailed = 1;
+  else if (fetchedKinds) r.contribOk = 1;
+  if (!failed && fetchedKinds === CONTRIB_KINDS.length) {
+    await c.students.updateOne({ _id: student._id }, { $set: { contribSyncedAt: startedAt } });
+    student.contribSyncedAt = startedAt;
+  }
+  return true;
+}
+
 /**
  * Fetches one student. -> { outcome: 'ok' | 'failed' | 'notFound', prs, prsNew, prsUpdated, newMerged, renamed, fatal?, error? }
  * Never throws for GitHub-side failures.
  */
 async function processStudent(env, student, { full }) {
   const { c, github } = env;
-  const r = { outcome: 'ok', prs: 0, prsNew: 0, prsUpdated: 0, newMerged: 0, renamed: 0, error: '', fatal: false, rateLimit: null };
+  const r = { outcome: 'ok', prs: 0, prsNew: 0, prsUpdated: 0, newMerged: 0, renamed: 0, error: '', fatal: false, rateLimit: null,
+    issues: 0, issuesNew: 0, reviews: 0, reviewsNew: 0, contribFailed: 0, contribSkipped: 0 };
   let loginChecked = false;
 
   // periodic account check (at most once per LOGIN_CHECK_DAYS)
@@ -316,6 +404,7 @@ async function processStudent(env, student, { full }) {
     const update = { $set: set };
     if ((full && !unverified) || (res.nodes || []).length) update.$unset = { unresolvedSince: '' }; // an empty incremental result proves nothing
     await c.students.updateOne({ _id: student._id }, update);
+    await fetchContributions(env, student, r, { full, startedAt });
     return r;
   }
   return r;
@@ -328,6 +417,7 @@ async function runAll(env, tasks, summary, { concurrency }) {
   let next = 0;
   let done = 0;
   let consecutive = 0;
+  let contribConsecutive = 0; // students in a row whose issue or review search failed
   let abort = null;
   env.progress(0, total);
 
@@ -343,6 +433,14 @@ async function runAll(env, tasks, summary, { concurrency }) {
       } catch (e) { // database or programming error for this student: count it, keep going
         r = { outcome: 'failed', prs: 0, prsNew: 0, prsUpdated: 0, newMerged: 0, renamed: 0, error: `unexpected: ${e?.message || e}`, fatal: false };
       }
+      for (const k of ['issues', 'issuesNew', 'reviews', 'reviewsNew', 'contribFailed', 'contribSkipped']) summary[k] += r[k] || 0;
+      if (r.contribFailed) {
+        contribConsecutive++;
+        if (contribConsecutive >= MAX_CONSECUTIVE_FAILURES && !env.contribOff) {
+          env.contribOff = true;
+          env.log(`issues and reviews skipped for the rest of this run after ${contribConsecutive} consecutive failures`);
+        }
+      } else if (r.contribOk) contribConsecutive = 0;
       summary.studentsChecked++;
       summary.prs += r.prs; summary.prsNew += r.prsNew; summary.prsUpdated += r.prsUpdated; summary.newMerged += r.newMerged;
       summary.renamed += r.renamed;
@@ -352,6 +450,8 @@ async function runAll(env, tasks, summary, { concurrency }) {
       if (r.outcome === 'ok') {
         summary.ok++; consecutive = 0;
         if (r.prs) env.log(`${student._id}: ${r.prs} PRs saved (${r.prsNew} new, ${r.newMerged} newly merged)${full ? ' [full]' : ''}`);
+        if (r.issues || r.reviews) env.log(`${student._id}: ${r.issues} issues (${r.issuesNew} new), ${r.reviews} reviews (${r.reviewsNew} new) saved`);
+        if (r.fatal) abort ??= new Error(`GitHub fetch aborted: ${r.fatalError}`); // a contribution search hit a bad token
       } else if (r.outcome === 'notFound') {
         summary.notFound++; consecutive = 0;
         env.log(`${student._id}: GitHub account ${student.username} not found`);
@@ -414,7 +514,7 @@ async function run(db, ctx, opts, select, params) {
   }
   if (!summary.studentsChecked) await refreshAggregates(db);
   summary.durationMs = Date.now() - t0;
-  env.log(`done: ${summary.ok} ok, ${summary.failed} failed, ${summary.notFound} not found, ${summary.prs} PRs saved (${summary.prsNew} new, ${summary.newMerged} newly merged), ${summary.renamed} renamed`);
+  env.log(`done: ${summary.ok} ok, ${summary.failed} failed, ${summary.notFound} not found, ${summary.prs} PRs saved (${summary.prsNew} new, ${summary.newMerged} newly merged), ${summary.issues} issues (${summary.issuesNew} new), ${summary.reviews} reviews (${summary.reviewsNew} new), ${summary.contribFailed} contribution fetches failed${summary.contribSkipped ? `, ${summary.contribSkipped} skipped` : ''}, ${summary.renamed} renamed`);
   return summary;
 }
 

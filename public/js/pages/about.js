@@ -2,7 +2,7 @@
 
 import { api } from '../lib/api.js';
 import { h, pageHead, table, categoryBadge, tierBadge, fmt, CATEGORIES, CATEGORY_HELP } from '../lib/ui.js';
-import { getMeta, hasRanges, link, put, rangeParams, rangeControl, rangeLine, rangeSentence } from './common.js';
+import { getMeta, hasRanges, hasContributions, link, put, rangeParams, rangeControl, rangeLine, rangeSentence } from './common.js';
 
 function chips(list, emptyText) {
   if (!list || !list.length) return h('p', { class: 'muted' }, emptyText);
@@ -21,6 +21,7 @@ export default async function (el, ctx) {
   const counts = overview ? overview.prs.byCategory : null;
   const total = overview ? overview.prs.total : 0;
   const step = (title, text) => h('li', null, h('div', null, h('strong', null, title), ' ', text));
+  const contrib = hasContributions(meta);
 
   put(el, 
     pageHead({
@@ -38,6 +39,12 @@ export default async function (el, ctx) {
       h('p', null,
         'Everything else a student does on GitHub in public (coursework, club projects, practice repositories, their own and their friends’ projects) is kept and shown on their profile, ',
         'but it is not part of the headline. That work is worth doing; it is simply a different thing from getting a change accepted by an outside project.'),
+      contrib ? h('p', null,
+        'Beside the headline the site counts three kinds of contribution: ', h('strong', null, 'pull requests in every state'),
+        ' (open, merged, and closed without merging), ', h('strong', null, 'issues raised'), ' by a student, and ',
+        h('strong', null, 'reviews given'), ' on other people’s pull requests, counted once per pull request however many reviews the student left on it. ',
+        'An issue counts on the day it was opened and a review on the day of the student’s first review of that pull request. ',
+        'Issues and reviews get the same category as a pull request to the same project would. Comments, discussions and commits pushed directly are not counted.') : null,
 
       h('h2', null, 'The six categories'),
       overview && overview.range ? h('p', { class: 'muted' }, `Pull requests opened in the selected period (${rangeSentence(overview.range)}).`) : null,
@@ -118,11 +125,15 @@ export default async function (el, ctx) {
 
       h('h2', null, 'Where the data comes from'),
       h('p', null,
-        `GitHub’s public search for pull requests, one query per tracked username, refreshed daily. ${fmt.num(meta.counts.students)} students and ${fmt.num(meta.counts.prs)} pull requests are in the register. `,
+        contrib
+          ? `GitHub’s public search for pull requests, issues and reviews, run per tracked username and refreshed daily. ${fmt.num(meta.counts.students)} students, ${fmt.num(meta.counts.prs)} pull requests, ${fmt.num(meta.counts.issues ?? 0)} issues and ${fmt.num(meta.counts.reviews ?? 0)} reviewed pull requests are in the register. `
+          : `GitHub’s public search for pull requests, one query per tracked username, refreshed daily. ${fmt.num(meta.counts.students)} students and ${fmt.num(meta.counts.prs)} pull requests are in the register. `,
         meta.lastSyncAt ? `Last updated ${fmt.datetime(meta.lastSyncAt)}.` : 'No update has run yet.'),
       h('ul', null,
         h('li', null, 'Pull requests in private repositories are never stored.'),
-        h('li', null, 'Only pull requests are counted. Issues, reviews, discussions and commits pushed directly are not.'),
+        contrib
+          ? h('li', null, 'Pull requests, issues and reviews in private repositories are never stored. Comments, discussions and commits pushed directly are not counted.')
+          : h('li', null, 'Only pull requests are counted. Issues, reviews, discussions and commits pushed directly are not.'),
         h('li', null, 'Work done under a GitHub account that is not tracked here is not visible.'),
         h('li', null, 'Year of study is worked out from the batch and today’s date; the academic year starts on 1 July.')),
 

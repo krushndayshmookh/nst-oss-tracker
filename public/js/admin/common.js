@@ -217,3 +217,17 @@ export function fetchErrorText(error) {
   if (/rate limit/i.test(text)) return 'GitHub rate limit reached; the next sync retries';
   return text;
 }
+
+/**
+ * Issue and review numbers of a fetch summary (SPEC addendum I3), only when the summary carries them:
+ * ['12 issues (3 new)', '4 reviews (1 new)', 'issues or reviews failed for 2 students'].
+ */
+export function contribBits(s) {
+  if (!s || typeof s !== 'object') return [];
+  const out = [];
+  if (typeof s.issues === 'number') out.push(`${fmt.num(s.issues)} issues${s.issuesNew ? ` (${fmt.num(s.issuesNew)} new)` : ''}`);
+  if (typeof s.reviews === 'number') out.push(`${fmt.num(s.reviews)} reviews${s.reviewsNew ? ` (${fmt.num(s.reviewsNew)} new)` : ''}`);
+  if (s.contribFailed) out.push(`issues or reviews failed for ${fmt.num(s.contribFailed)} ${s.contribFailed === 1 ? 'student' : 'students'}`);
+  if (s.contribSkipped) out.push(`issues and reviews skipped for ${fmt.num(s.contribSkipped)} ${s.contribSkipped === 1 ? 'student' : 'students'}`);
+  return out;
+}
