@@ -12,7 +12,8 @@ import { registerHandler, unregisterHandler, whenIdle } from '../src/jobs.js';
 
 const SECRETS = ['alice@private.example', 'ENR-ALICE-001', 'test sheet', 'private note'];
 const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
-const STATS_KEYS = ['totalPrs', 'mergedPrs', 'osPrs', 'osMerged', 'osOpen', 'osMajorMerged', 'osRepos', 'osOrgs', 'byCategory', 'firstPrAt', 'lastPrAt', 'lastOsMergedAt'];
+const STATS_KEYS = ['totalPrs', 'mergedPrs', 'osPrs', 'osMerged', 'osOpen', 'osMajorMerged', 'osRepos', 'osOrgs', 'byCategory', 'firstPrAt', 'lastPrAt', 'lastOsMergedAt',
+  'osClosed', 'totalIssues', 'osIssues', 'totalReviews', 'osReviews', 'osContributions', 'lastActivityAt'];
 const PR_KEYS = ['url', 'number', 'title', 'author', 'authorName', 'repo', 'owner', 'ownerType', 'stars', 'state', 'isDraft', 'createdAt', 'mergedAt', 'closedAt',
   'additions', 'deletions', 'changedFiles', 'comments', 'reviews', 'campus', 'batch', 'year', 'category', 'tier', 'reason', 'override', 'overrideNote'];
 
@@ -67,10 +68,12 @@ test('ingest: categories, private repos skipped, aggregates', async () => {
   assert.equal(await c.prs.countDocuments({ repoLc: 'secret/internal' }), 0);
   assert.equal(await c.repos.countDocuments({ _id: 'secret/internal' }), 0);
   const alice = await c.students.findOne({ _id: 'alice' });
-  assert.deepEqual({ ...alice.stats, firstPrAt: null, lastPrAt: null, lastOsMergedAt: null }, {
+  assert.deepEqual({ ...alice.stats, firstPrAt: null, lastPrAt: null, lastOsMergedAt: null, lastActivityAt: null }, {
     totalPrs: 7, mergedPrs: 5, osPrs: 2, osMerged: 1, osOpen: 1, osMajorMerged: 1, osRepos: 1, osOrgs: 1,
     byCategory: { open_source: 2, practice: 1, nst_internal: 1, peer_repo: 1, own_repo: 1, low_signal: 1 }, firstPrAt: null, lastPrAt: null, lastOsMergedAt: null,
+    osClosed: 0, totalIssues: 0, osIssues: 0, totalReviews: 0, osReviews: 0, osContributions: 2, lastActivityAt: null,
   });
+  assert.equal(alice.stats.lastActivityAt.getTime(), alice.stats.lastPrAt.getTime(), 'no issues or reviews: last activity = last PR');
   assert.ok(alice.stats.firstPrAt < alice.stats.lastPrAt && alice.stats.lastOsMergedAt instanceof Date);
   assert.equal((await c.students.findOne({ _id: 'carol' })).stats.totalPrs, 0);
   assert.equal((await c.students.findOne({ _id: 'dave' })).stats.totalPrs, 0, 'inactive students have empty stats');
@@ -93,7 +96,7 @@ test('health, meta, 404 and validation errors', async () => {
   assert.deepEqual(meta.body.years, [yearLabel(2026), yearLabel(2025), 'Unknown'].sort((a, b) => a.localeCompare(b)).filter((v, i, arr) => arr.indexOf(v) === i));
   assert.deepEqual(meta.body.categories, ['open_source', 'practice', 'nst_internal', 'peer_repo', 'own_repo', 'low_signal']);
   assert.deepEqual(meta.body.tiers, ['major', 'established', 'emerging']);
-  assert.deepEqual(meta.body.counts, { students: 3, prs: 9 });
+  assert.deepEqual(meta.body.counts, { students: 3, prs: 9, issues: 0, reviews: 0 });
   assert.equal(meta.body.rulesSummary.minStarsOrgRepo, 50);
   assert.ok(typeof meta.body.lastSyncAt === 'string');
   const nf = await app.get('/api/nope');
@@ -122,7 +125,7 @@ test('overview', async () => {
   assert.deepEqual([ay.body.students, ay.body.prs, ay.body.topRepos, ay.body.topOrgs, ay.body.topStudents.map((s) => s.username)],
     [body.students, body.prs, body.topRepos, body.topOrgs, body.topStudents.map((s) => s.username)], 'ranged pipelines agree with the all-time stats');
   assert.deepEqual(body.filters, { campus: null, year: null });
-  assert.deepEqual(body.students, { tracked: 3, withAnyPr: 2, withOsPr: 2, withOsMerged: 2, withMajorMerged: 2 });
+  assert.deepEqual(body.students, { tracked: 3, withAnyPr: 2, withOsPr: 2, withOsMerged: 2, withMajorMerged: 2, withOsIssue: 0, withOsReview: 0, withOsContribution: 2 });
   assert.deepEqual(body.prs, {
     total: 9, merged: 7, osPrs: 4, osMerged: 3, osOpen: 1,
     byCategory: { open_source: 4, practice: 1, nst_internal: 1, peer_repo: 1, own_repo: 1, low_signal: 1 },
@@ -138,13 +141,13 @@ test('overview', async () => {
   assert.deepEqual(Object.keys(body.topStudents[0]), ['username', 'name', 'campus', 'batch', 'year', 'stats']);
   assert.equal(body.monthly.length, 24);
   assert.equal(body.monthly.at(-1).month, new Date().toISOString().slice(0, 7));
-  assert.deepEqual(Object.keys(body.monthly[0]), ['month', 'osOpened', 'osMerged', 'allOpened']);
+  assert.deepEqual(Object.keys(body.monthly[0]), ['month', 'osOpened', 'osMerged', 'allOpened', 'osIssues', 'osReviews']);
   const sum = (k) => body.monthly.reduce((a, m) => a + m[k], 0);
   assert.deepEqual([sum('allOpened'), sum('osOpened'), sum('osMerged')], [9, 4, 3]);
   assert.ok(body.monthly.every((m, i, arr) => i === 0 || arr[i - 1].month < m.month));
 
   const ru = (await app.get('/api/overview?campus=RU')).body;
-  assert.deepEqual(ru.students, { tracked: 2, withAnyPr: 1, withOsPr: 1, withOsMerged: 1, withMajorMerged: 1 });
+  assert.deepEqual(ru.students, { tracked: 2, withAnyPr: 1, withOsPr: 1, withOsMerged: 1, withMajorMerged: 1, withOsIssue: 0, withOsReview: 0, withOsContribution: 1 });
   assert.deepEqual([ru.prs.total, ru.prs.osPrs, ru.prs.osMerged], [7, 2, 1]);
   assert.deepEqual(ru.topRepos, [{ name: 'apache/airflow', stars: 5000, tier: 'major', osPrs: 2, osMerged: 1, students: 1 }]);
   assert.deepEqual(ru.topStudents.map((s) => s.username), ['Alice']);
@@ -183,7 +186,7 @@ test('students list + profile', async () => {
   assert.equal((await app.get('/api/students?q=.*')).body.total, 0, 'q is a literal substring, not a regex');
 
   const prof = (await app.get('/api/students/ALICE')).body;
-  assert.deepEqual(Object.keys(prof), ['range', 'student', 'monthly', 'repos', 'prs', 'tech']); // tech: SPEC addendum H
+  assert.deepEqual(Object.keys(prof), ['range', 'student', 'monthly', 'repos', 'prs', 'issues', 'reviews', 'tech']); // tech: SPEC addendum H
   assert.equal(prof.student.username, 'Alice');
   assert.equal(prof.range.preset, 'ay');
   assert.equal(prof.monthly.reduce((a, m) => a + m.allOpened, 0), 7);
@@ -234,7 +237,7 @@ test('repos and orgs', async () => {
   assert.deepEqual(Object.keys(repos.items[0]), ['name', 'owner', 'ownerType', 'stars', 'forks', 'language', 'license', 'description', 'isFork', 'isArchived',
     'category', 'tier', 'reason', 'override', 'overrideNote',
     'languages', 'topics', 'domain', 'domainLabel', 'domainReason', 'metaFetchedAt', 'metaStatus', 'stats']); // technology fields: SPEC addendum H
-  assert.deepEqual(Object.keys(repos.items[0].stats), ['prs', 'merged', 'open', 'closed', 'students', 'campuses', 'firstPrAt', 'lastPrAt']);
+  assert.deepEqual(Object.keys(repos.items[0].stats), ['prs', 'merged', 'open', 'closed', 'students', 'campuses', 'firstPrAt', 'lastPrAt', 'issues', 'reviews']);
   assert.equal((await app.get('/api/repos?category=all')).body.total, 7);
   assert.deepEqual((await app.get('/api/repos?category=all&q=PORTAL')).body.items.map((r) => r.name), ['nst-sdc/portal']);
   assert.deepEqual((await app.get('/api/repos?category=all&owner=alice')).body.items.map((r) => [r.name, r.category]), [['Alice/site', 'peer_repo']]);
@@ -251,7 +254,7 @@ test('repos and orgs', async () => {
   const orgs = (await app.get('/api/orgs')).body;
   assert.deepEqual(orgs.items.map((o) => o.login), ['apache', 'midorg']);
   assert.deepEqual(Object.keys(orgs.items[0]), ['login', 'type', 'override', 'overrideNote', 'stats']);
-  assert.deepEqual(Object.keys(orgs.items[0].stats), ['repos', 'prs', 'merged', 'osPrs', 'osMerged', 'students', 'maxStars', 'byCategory']);
+  assert.deepEqual(Object.keys(orgs.items[0].stats), ['repos', 'prs', 'merged', 'osPrs', 'osMerged', 'students', 'maxStars', 'byCategory', 'issues', 'reviews', 'osIssues', 'osReviews']);
   assert.equal((await app.get('/api/orgs?category=all')).body.total, 7);
   assert.deepEqual((await app.get('/api/orgs?category=all&q=NST')).body.items.map((o) => o.login), ['nst-sdc']);
   const org = (await app.get('/api/orgs/Apache')).body;
@@ -266,7 +269,7 @@ test('csv exports', async () => {
   assert.match(s.headers.get('content-type'), /text\/csv/);
   assert.match(s.headers.get('content-disposition'), /attachment; filename="students.csv"/);
   const lines = s.text.trim().split('\n');
-  assert.equal(lines[0], 'username,name,campus,batch,year,total_prs,merged_prs,os_prs,os_merged,os_open,os_major_merged,os_repos,os_orgs,practice_prs,nst_internal_prs,peer_repo_prs,own_repo_prs,low_signal_prs,first_pr_at,last_pr_at');
+  assert.equal(lines[0], 'username,name,campus,batch,year,total_prs,merged_prs,os_prs,os_merged,os_open,os_major_merged,os_repos,os_orgs,practice_prs,nst_internal_prs,peer_repo_prs,own_repo_prs,low_signal_prs,first_pr_at,last_pr_at,os_closed_prs,total_issues,os_issues,total_reviews,os_reviews,os_contributions');
   assert.equal(lines.length, 4);
   assert.ok(lines[2].startsWith(`Alice,Alice Anand,RU,2025,${yearLabel(2025)},7,5,2,1,1,1,1,1,1,1,1,1,1,`));
   const p = await app.get('/api/export/prs.csv?category=all&author=alice', { raw: true });
@@ -450,7 +453,7 @@ test('admin students: list, add, bulk add, edit, deactivate, purge, backfill', a
 
   // deactivate -> hidden everywhere public; reactivate
   const del = await app.del('/api/admin/students/bob');
-  assert.deepEqual(del.body, { ok: true, purged: false, prsRemoved: 0 });
+  assert.deepEqual(del.body, { ok: true, purged: false, prsRemoved: 0, contributionsRemoved: 0 });
   assert.equal((await app.get('/api/students/bob')).status, 404);
   assert.equal((await app.get('/api/prs?category=all&author=bob')).body.total, 0);
   assert.equal((await c.repos.findOne({ _id: 'apache/airflow' })).stats.prs, 2);
@@ -466,7 +469,7 @@ test('admin students: list, add, bulk add, edit, deactivate, purge, backfill', a
   await app.patch('/api/admin/students/dave', { active: true });
   assert.equal((await c.repos.findOne({ _id: 'apache/airflow' })).stats.prs, 4);
   const purge = await app.del('/api/admin/students/dave?purge=1');
-  assert.deepEqual(purge.body, { ok: true, purged: true, prsRemoved: 1 });
+  assert.deepEqual(purge.body, { ok: true, purged: true, prsRemoved: 1, contributionsRemoved: 0 });
   assert.equal(await c.students.countDocuments({ _id: 'dave' }), 0);
   assert.equal(await c.prs.countDocuments({ author: 'dave' }), 0);
   assert.equal((await c.repos.findOne({ _id: 'apache/airflow' })).stats.prs, 3);
@@ -518,7 +521,7 @@ test('admin overrides are applied synchronously and can be undone', async () => 
   // repo: exclude -> every PR in it
   const repo = await app.post('/api/admin/repos/override', { repo: 'Apache/Airflow', override: 'exclude', note: 'tutorial repo' });
   assert.deepEqual([repo.body.ok, repo.body.affected, repo.body.repo.category, repo.body.repo.reason, repo.body.repo.override, repo.body.repo.overrideNote],
-    [true, { prs: 3, repos: 1 }, 'low_signal', 'admin: repo excluded', 'exclude', 'tutorial repo']);
+    [true, { prs: 3, repos: 1, contributions: 0 }, 'low_signal', 'admin: repo excluded', 'exclude', 'tutorial repo']);
   assert.deepEqual(await c.prs.distinct('category', { repoLc: 'apache/airflow' }), ['low_signal']);
   assert.deepEqual([await osMerged('alice'), await osMerged('bob')], [0, 1]);
   assert.deepEqual((await app.get('/api/repos')).body.items.map((r) => r.name), ['midorg/tool']);
@@ -531,7 +534,7 @@ test('admin overrides are applied synchronously and can be undone', async () => 
   // owner: NST internal / exclude / include
   const own = await app.post('/api/admin/owners/override', { login: 'MidOrg', override: 'nst_internal', note: 'club org' });
   assert.deepEqual([own.body.ok, own.body.affected, own.body.org.login, own.body.org.override, own.body.org.overrideNote, own.body.org.stats.byCategory.nst_internal],
-    [true, { prs: 1, repos: 1 }, 'midorg', 'nst_internal', 'club org', 1]);
+    [true, { prs: 1, repos: 1, contributions: 0 }, 'midorg', 'nst_internal', 'club org', 1]);
   assert.deepEqual([(await c.prs.findOne({ number: 9 })).category, (await c.prs.findOne({ number: 9 })).reason, (await c.repos.findOne({ _id: 'midorg/tool' })).category],
     ['nst_internal', 'admin: org marked NST internal', 'nst_internal']);
   assert.equal(await osMerged('bob'), 1);

@@ -4,7 +4,7 @@
 import { api } from '../lib/api.js';
 import { setQuery, refresh } from '../lib/router.js';
 import { h, pageHead, filterBar, table, pagination, card, stateBadge, modal, confirmDialog, toast, loading, fmt } from '../lib/ui.js';
-import { act, poll, errorText, handleAuthError, fetchErrorText } from './common.js';
+import { act, poll, errorText, handleAuthError, fetchErrorText, contribBits } from './common.js';
 import { scheduledFetch } from './schedule.js';
 
 const TYPE_LABELS = { sync: 'Sync', backfill: 'History fetch', reclassify: 'Reclassify', import: 'Import', repoMeta: 'Repo metadata' };
@@ -47,6 +47,7 @@ function resultText(job) {
   if (job.type !== 'repoMeta' && ('ok' in s || 'failed' in s)) {
     const bits = [`${fmt.num(s.ok ?? 0)} ok`, `${fmt.num(s.failed ?? 0)} failed`, `${fmt.num(s.prs ?? 0)} PRs`];
     if (job.status === 'cancelled') bits.unshift('Cancelled, what was fetched is kept');
+    bits.push(...contribBits(s));
     if (s.renamed) bits.push(`${fmt.num(s.renamed)} renamed`);
     if (s.notFound) bits.push(`${fmt.num(s.notFound)} not found on GitHub`);
     return bits.join(', ');

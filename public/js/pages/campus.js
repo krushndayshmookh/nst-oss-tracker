@@ -6,7 +6,7 @@ import { h, pageHead, statCard, card, table, barCell, tierBadge, calendarHeatmap
 import { lineChart, barChart } from '../lib/charts.js';
 import {
   getMeta, hasRanges, rangeParams, rangeControl, rangeLine, rangeSentence, rangeIsOpen, isPastRange, yearLabel, link, campusLink, studentCell,
-  repoHref, orgHref, activityCard, csvButton, put,
+  repoHref, orgHref, activityCard, csvButton, put, hasContributions,
 } from './common.js';
 import {
   scaleOf, scaleToggle, rate, pctVal, smallMark, campusYearTable, funnelMatrix, tierMixBlock, categoryMixBlock, yearBars, yearMetric,
@@ -140,11 +140,11 @@ export default async function (el, ctx) {
         h('p', { class: 'card-note' }, past ? 'Year of study is as of today; the batch is shown beside it.' : 'Year of study as of today.'))),
     card({ flush: true },
       campusYearTable({ smallCohortBelow: below }, {
-        ctx, past, rateMode: scale !== 'raw', firstColumn: 'year', caption: `Students and pull requests at ${campus} by year of study`,
+        ctx, past, rateMode: scale !== 'raw', firstColumn: 'year', contrib: hasContributions(meta), caption: `Students and pull requests at ${campus} by year of study`,
         rows: [...years.map((r) => ({ ...r, _kind: null })), { ...t, _kind: 'total' }],
       }),
       h('p', { class: 'card-note card-note-pad' }, scale !== 'raw'
-        ? 'Student columns are shares of the tracked students; pull-request columns are per 100 tracked students. Hover a figure for its count.'
+        ? `Student columns are shares of the tracked students; pull-request columns are per 100 tracked students. Hover a figure for its count.${hasContributions(meta) ? ' Open PRs, Issues and Reviews are counts.' : ''}`
         : 'Counts, with the two headline rates beside them.')));
 
   // ── what the work is ──

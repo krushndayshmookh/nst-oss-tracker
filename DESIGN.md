@@ -606,3 +606,46 @@ on failure restore the old value and `toast(err.message, 'error')`.
 `.form-grid` with `Save schedule`. The public footer's "Data updated …" line is filled by `lib/shell.js` from
 `meta.lastSyncAt`; a "updates paused" note needs a field in `/api/meta` that the addendum does not name, so it is
 not wired.
+
+## 16. Contributions: issues and reviews (`SPEC-ADDENDUM-I-contributions.md`)
+
+Everything below is shown only when `meta.features.contributions` is true (`hasContributions(meta)` in
+`pages/common.js`). Against an API without the addendum every page renders as before; every new key is read with a
+fallback (`?? 0`, `|| []`).
+
+**Labels and badges (`lib/ui.js`).**
+- `KIND_LABELS` (`pr`, `issue`, `review`), `ISSUE_STATE_LABELS`, `REVIEW_STATE_LABELS`.
+- `issueStateBadge(state, stateReason)`: open is the open ring; closed as completed a filled dot ("Closed");
+  closed as not planned the cross ("Not planned"); closed as a duplicate the cross ("Duplicate"). The reason is the
+  badge title.
+- `reviewStateBadge(state)`: approved (tick, `--ok`), changes requested (ring with a dot, `--warn`), commented
+  (speech bubble, `--info`), dismissed (dash, `--ink-3`). Same `.badge-state` look as PR states; the glyph differs
+  per verdict, so colour is never the only cue. Classes `.state-approved`, `.state-changes_requested`,
+  `.state-commented`, `.state-dismissed` in `app.css`.
+
+**Table and links (`pages/common.js`).**
+- `contributionTable(items, ctx, { kind, student, project, sort, order, onSort, empty, caption })`, modelled on
+  `prTable`. Issue rows: Issue (title to GitHub, `repo#number` under it), Student, Project, State, Category,
+  Opened, Comments. Review rows: Pull request reviewed (title to the review, "by <PR author>" under it), Student,
+  Project, Verdict, PR state, Category, Reviews, First reviewed (latest review date in its title). Only the date
+  column sorts.
+- `contribHref(kind, query, ctx)`: link to `#/prs` for one kind, keeping the date range.
+
+**Where they are used.**
+- Contributions `#/prs` (nav label "Contributions"; "Pull requests" against an old API): `tabs()` as links
+  Pull requests | Issues | Reviews (`?kind=issue|review`). A tab switch keeps the shared filters and drops state,
+  sort and page. The state select lists the states of the kind (Verdict on the Reviews tab). CSV button goes to
+  `/export/contributions.csv?kind=…` on the Issues and Reviews tabs.
+- Overview: section "Open-source contributions" with a `.cards` band of six figures, each linking to the filtered
+  list; the monthly line chart adds "Issues raised" and "Reviews given" (slots 3 and 4).
+- Students: columns Open PRs, Issues, Reviews (sortable on the API keys); "Last activity" replaces "Last PR"
+  (sortable only against an old API, which sorts by the last pull request); checkbox "With any open-source contribution".
+- Student profile: cards "Issues raised" and "Reviews given" (each links to its tab); the list card has kind tabs
+  (`?tab=issues|reviews`) and, on the PR tab, state chips All / Open / Merged / Closed (`segmented()`, `?state=`)
+  in a `.card-tools` row: the one new layout class, a padded flex row between the tabs and the table of a flush card.
+- Project and organisation pages: "Issues raised" and "Reviews given" figures beside the PR figures, linking to the
+  Contributions page filtered by `repo` / `owner` and `kind`.
+- Campus tables (`campusYearTable({ contrib: true })`): Open PRs, Issues, Reviews as counts in both modes.
+- Activity: "Count" select adds "Issues raised" and "Reviews given"; nouns and verbs on the page follow the metric.
+- About: one paragraph on what is counted. Admin Jobs and Scheduled fetch: issue and review numbers in run
+  summaries when present (`contribBits(summary)` in `admin/common.js`).

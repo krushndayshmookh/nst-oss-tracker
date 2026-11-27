@@ -125,6 +125,58 @@ export async function prFilter(db, query, { defaultCategory = 'open_source', ran
   return allOf(f, q ? { $or: [{ title: contains(q) }, { repo: contains(q) }] } : null, prRangeFilter(range, state));
 }
 
+// ---------- contributions (SPEC addendum I) ----------
+
+export const CONTRIB_KINDS = ['issue', 'review'];
+export const CONTRIB_STATES = { issue: ['open', 'closed'], review: ['approved', 'changes_requested', 'commented', 'dismissed'] };
+
+/** The `kind` query param of a contribution list / export: 'issue' (default) or 'review'; anything else is a bad request. */
+export const contribKind = (query) => oneOf(query, 'kind', CONTRIB_KINDS, 'issue');
+
+/**
+ * Mongo filter for contribution lists / exports (active items only), mirroring prFilter. A contribution belongs to a
+ * range by createdAt only. `state` must be a state of the chosen kind.
+ */
+export async function contributionFilter(db, query, { defaultCategory = 'open_source', range = null } = {}) {
+  const kind = contribKind(query);
+  const f = { active: true, kind, ...cohortFilter(query) };
+  const category = oneOf(query, 'category', [...CATEGORIES, 'all'], defaultCategory);
+  if (category !== 'all') f.category = category;
+  const state = str(query, 'state');
+  if (state) {
+    if (!CONTRIB_STATES[kind].includes(state)) throw badRequest(`invalid state: expected one of ${CONTRIB_STATES[kind].join(', ')} for kind ${kind}`);
+    f.state = state;
+  }
+  const tier = oneOf(query, 'tier', TIERS);
+  if (tier) f.tier = tier;
+  const author = str(query, 'author');
+  if (author) f.author = (await findStudent(db, author))?._id ?? lc(author);
+  const repo = str(query, 'repo');
+  if (repo) f.repoLc = lc(repo);
+  const owner = str(query, 'owner');
+  if (owner) f.ownerLc = lc(owner);
+  const q = search(query);
+  const cond = range ? inRange(range) : null;
+  return allOf(f, q ? { $or: [{ title: contains(q) }, { repo: contains(q) }] } : null, cond ? { createdAt: cond } : null);
+}
+
+/** The public Contribution object of addendum I5: exactly these keys. */
+export function contributionOut(d, students, now = new Date()) {
+  const s = students?.get(d.author);
+  const review = d.kind === 'review';
+  return {
+    kind: d.kind, url: d.url || d._id, number: d.number ?? 0, title: d.title || '',
+    author: s?.username || d.authorLogin || d.author, authorName: s?.name || '',
+    repo: d.repo, owner: d.owner, ownerType: d.ownerType, stars: d.stars ?? 0, state: d.state,
+    stateReason: review ? null : (d.stateReason ?? null), createdAt: iso(d.createdAt), closedAt: iso(d.closedAt ?? null),
+    comments: review ? null : (d.comments ?? 0),
+    prUrl: review ? (d.prUrl ?? null) : null, prAuthor: review ? (d.prAuthor ?? null) : null, prState: review ? (d.prState ?? null) : null,
+    reviewCount: review ? (d.reviewCount ?? 0) : null, lastReviewedAt: review ? iso(d.lastReviewedAt ?? null) : null,
+    campus: d.campus || 'Unknown', batch: d.batch ?? null, year: yearLabel(d.batch, now),
+    category: d.category, tier: d.tier ?? null, reason: d.reason || '',
+  };
+}
+
 // ---------- serialisers ----------
 
 export function statsOut(s) {
@@ -135,6 +187,10 @@ export function statsOut(s) {
     osMajorMerged: s.osMajorMerged ?? 0, osRepos: s.osRepos ?? 0, osOrgs: s.osOrgs ?? 0,
     byCategory: { ...emptyByCategory(), ...(s.byCategory || {}) },
     firstPrAt: iso(s.firstPrAt), lastPrAt: iso(s.lastPrAt), lastOsMergedAt: iso(s.lastOsMergedAt),
+    // addendum I: every new key has a fallback, stored stats may predate it
+    osClosed: s.osClosed ?? 0, totalIssues: s.totalIssues ?? 0, osIssues: s.osIssues ?? 0, totalReviews: s.totalReviews ?? 0, osReviews: s.osReviews ?? 0,
+    osContributions: s.osContributions ?? ((s.osPrs ?? 0) + (s.osIssues ?? 0) + (s.osReviews ?? 0)),
+    lastActivityAt: iso(s.lastActivityAt ?? null),
   };
 }
 
@@ -211,7 +267,7 @@ export function repoOut(r, { admin = false } = {}) {
     domain: r.domain || 'other', domainLabel: domainLabel(r.domain || 'other'), domainReason: r.domainReason || '',
     metaFetchedAt: iso(r.metaFetchedAt), metaStatus: r.metaStatus || null,
     stats: { prs: s.prs, merged: s.merged, open: s.open, closed: s.closed, students: s.students, campuses: s.campuses || [],
-      firstPrAt: iso(s.firstPrAt), lastPrAt: iso(s.lastPrAt) },
+      firstPrAt: iso(s.firstPrAt), lastPrAt: iso(s.lastPrAt), issues: s.issues ?? 0, reviews: s.reviews ?? 0 },
   };
 }
 
@@ -220,7 +276,8 @@ export function orgOut(o, { admin = false } = {}) {
   return {
     login: o.login || o._id, type: o.type || 'User', override: o.override ?? null, overrideNote: admin ? (o.overrideNote ?? null) : null,
     stats: { repos: s.repos, prs: s.prs, merged: s.merged, osPrs: s.osPrs, osMerged: s.osMerged, students: s.students, maxStars: s.maxStars ?? 0,
-      byCategory: { ...emptyByCategory(), ...(s.byCategory || {}) } },
+      byCategory: { ...emptyByCategory(), ...(s.byCategory || {}) },
+      issues: s.issues ?? 0, reviews: s.reviews ?? 0, osIssues: s.osIssues ?? 0, osReviews: s.osReviews ?? 0 },
   };
 }
 
@@ -263,6 +320,18 @@ export async function prPage(db, filter, { sort = { createdAt: -1, _id: 1 }, pag
   const now = new Date();
   const out = (p) => prOut(p, students, now, { admin });
   return { items: rows.map((p) => (extra ? { ...out(p), ...extra(p) } : out(p))), total, page, limit };
+}
+
+/** Runs a paged contribution query and serialises it: { items, total, page, limit }. */
+export async function contributionPage(db, filter, { sort = { createdAt: -1, _id: 1 }, page = 1, limit = 25, skip = 0 } = {}) {
+  const contributions = db.collection('contributions');
+  const [rows, total] = await Promise.all([
+    contributions.find(filter).sort(sort).skip(skip).limit(limit).maxTimeMS(15000).toArray(),
+    contributions.countDocuments(filter, { maxTimeMS: 15000 }),
+  ]);
+  const students = await studentMap(db, rows.map((d) => d.author));
+  const now = new Date();
+  return { items: rows.map((d) => contributionOut(d, students, now)), total, page, limit };
 }
 
 export const COLLATION = { locale: 'en', strength: 2 };

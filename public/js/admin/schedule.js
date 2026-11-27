@@ -4,7 +4,7 @@
 
 import { api } from '../lib/api.js';
 import { h, card, table, stateBadge, modal, confirmDialog, toast, fmt } from '../lib/ui.js';
-import { CAMPUSES, act, field, errorText, fetchErrorText, getMeta } from './common.js';
+import { CAMPUSES, act, field, errorText, fetchErrorText, getMeta, contribBits } from './common.js';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const TRIGGERS = { schedule: 'Nightly', catchup: 'Nightly (caught up)', recovery: 'Nightly (restarted)', manual: 'Started by an admin' };
@@ -27,6 +27,7 @@ function runResult(job) {
   const bits = [`${fmt.num(s.studentsChecked ?? s.ok ?? 0)} students checked`];
   if (s.studentsFailed) bits.push(`${fmt.num(s.studentsFailed)} failed`);
   bits.push(`${fmt.num(s.prsNew ?? 0)} new PRs`, `${fmt.num(s.prsUpdated ?? 0)} updated`, `${fmt.num(s.newMerged ?? 0)} newly merged`);
+  bits.push(...contribBits(s));
   if (s.renamed) bits.push(`${fmt.num(s.renamed)} renamed`);
   if (s.notFound) bits.push(`${fmt.num(s.notFound)} not found on GitHub`);
   if (typeof s.rateLimitRemaining === 'number') bits.push(`${fmt.num(s.rateLimitRemaining)} GitHub requests left`);

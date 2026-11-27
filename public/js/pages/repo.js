@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { setQuery } from '../lib/router.js';
 import { h, pageHead, statCard, card, pagination, badge, categoryBadge, overrideBadge, calendarHeatmap, fmt, CATEGORY_HELP } from '../lib/ui.js';
 import { barChart } from '../lib/charts.js';
-import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, link, orgHref, campusList, prTable, contributorsTable, fetchActivity, activityCard, put } from './common.js';
+import { getMeta, rangeParams, rangeControl, rangeLine, isPastRange, link, orgHref, campusList, prTable, contributorsTable, fetchActivity, activityCard, put, hasContributions, contribHref } from './common.js';
 import { techHref } from './tech-common.js';
 
 export default async function (el, ctx) {
@@ -21,6 +21,8 @@ export default async function (el, ctx) {
   const { repo } = data;
   const prs = more || data.prs;
   const counted = repo.category === 'open_source';
+  // a project can have a page with issues or reviews by students and no PR (SPEC addendum I)
+  const noPrs = !(repo.stats.prs > 0);
   const charts = [];
 
   const why = counted ? null
@@ -47,11 +49,18 @@ export default async function (el, ctx) {
       repo.isArchived ? badge('Archived', 'warn') : null,
       why ? h('span', null, why, ' ', h('a', { href: link('/about', {}, ctx) }, 'How this is decided')) : null),
     h('div', { class: 'cards' },
-      statCard({ key: true, label: counted ? 'Merged PRs by NST students' : 'Merged PRs (not counted)', value: repo.stats.merged, sub: `of ${fmt.num(repo.stats.prs)} opened` }),
-      statCard({ label: 'Students', value: repo.stats.students, sub: campusList(repo.stats.campuses, ctx) }),
-      statCard({ label: 'Open now', value: repo.stats.open }),
-      statCard({ label: 'Closed without merging', value: repo.stats.closed }),
-      statCard({ label: 'First PR', value: fmt.date(repo.stats.firstPrAt), sub: repo.stats.lastPrAt ? `latest ${fmt.rel(repo.stats.lastPrAt)}` : null })),
+      noPrs ? statCard({ label: 'Pull requests by NST students', value: 0 }) : [
+        statCard({ key: true, label: counted ? 'Merged PRs by NST students' : 'Merged PRs (not counted)', value: repo.stats.merged, sub: `of ${fmt.num(repo.stats.prs)} opened` }),
+        statCard({ label: 'Students', value: repo.stats.students, sub: campusList(repo.stats.campuses, ctx) }),
+        statCard({ label: 'Open now', value: repo.stats.open }),
+        statCard({ label: 'Closed without merging', value: repo.stats.closed }),
+        statCard({ label: 'First PR', value: fmt.date(repo.stats.firstPrAt), sub: repo.stats.lastPrAt ? `latest ${fmt.rel(repo.stats.lastPrAt)}` : null }),
+      ],
+      // issues and reviews by NST students in this project (SPEC addendum I), linking to the Contributions page
+      hasContributions(meta) ? [
+        statCard({ label: 'Issues raised', value: repo.stats.issues ?? 0, href: contribHref('issue', { repo: repo.name, category: 'all' }, ctx), title: 'See the issues raised in this project' }),
+        statCard({ label: 'Reviews given', value: repo.stats.reviews ?? 0, sub: 'on other people’s PRs', href: contribHref('review', { repo: repo.name, category: 'all' }, ctx), title: 'See the reviews given in this project' }),
+      ] : null),
   );
 
   // languages by size and GitHub topics arrive with the repo metadata refresh (SPEC addendum H)
@@ -67,7 +76,9 @@ export default async function (el, ctx) {
   const strip = activityCard(activity, ctx, { card, calendarHeatmap, linkQuery: { repo: repo.name, category: 'all' } });
   if (strip) put(el, strip.el);
 
-  put(el, 
+  if (noPrs && page === 1) {
+    put(el, card({ title: 'Pull requests' }, h('p', { class: 'muted' }, `No pull requests by NST students in this project${data.range?.from || data.range?.to ? ' in this period' : ''}.`)));
+  } else put(el, 
     card({ title: 'Students', note: `${fmt.num(data.students.length)}${data.students.length === 100 ? '+' : ''}`, flush: true }, contributorsTable(data.students, ctx, { past: isPastRange(data.range, meta) })),
     card({ title: 'Pull requests', note: h('a', { href: link('/prs', { repo: repo.name, category: 'all' }, ctx) }, 'Open in the explorer'), flush: true },
       prTable(prs.items, ctx, { project: false }),

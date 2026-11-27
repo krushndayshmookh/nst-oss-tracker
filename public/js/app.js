@@ -1,7 +1,7 @@
 // Entry point of the public site: route table + the bits of the shell that depend on the current route.
 import { startRouter, href, navigate } from './lib/router.js';
 import { api } from './lib/api.js';
-import { getMeta, hasRanges, rangeQuery, rangeParams, sanitizeRange } from './pages/common.js';
+import { getMeta, hasRanges, hasContributions, rangeQuery, rangeParams, sanitizeRange } from './pages/common.js';
 
 const NAV_PATHS = new WeakMap();
 
@@ -22,6 +22,12 @@ function syncNav(ctx, meta) {
 function syncActivityNav(meta) {
   const a = document.querySelector('.site-nav a[href^="#/activity"]');
   if (a && meta && !hasRanges(meta)) a.remove();
+}
+
+/** The #/prs nav item reads "Contributions" (SPEC addendum I); a server without issues and reviews keeps "Pull requests". */
+function syncContribNav(meta) {
+  const a = document.querySelector('.site-nav a[href^="#/prs"]');
+  if (a && meta) a.textContent = hasContributions(meta) ? 'Contributions' : 'Pull requests';
 }
 
 startRouter([
@@ -46,6 +52,7 @@ startRouter([
     const fixed = sanitizeRange(ctx.query, meta);
     if (fixed) { navigate(ctx.path, fixed, { replace: true }); return false; }
     syncActivityNav(meta);
+    syncContribNav(meta);
     syncNav(ctx, meta);
     return undefined;
   },

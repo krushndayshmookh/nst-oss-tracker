@@ -91,6 +91,10 @@ const SORT_FIELDS = {
   per100: ['osMergedPer100', 'osMergedPer100'],
   majorMerged: ['osMajorMerged', 'osMajorMergedPer100'],
   totalPrs: ['totalPrs', 'totalPrsPer100'],
+  // addendum I: counts only, no per-100 rates
+  osOpen: ['osOpen', 'osOpen'],
+  osIssues: ['osIssues', 'osIssues'],
+  osReviews: ['osReviews', 'osReviews'],
 };
 export const CAMPUS_SORT_DEFAULT = 'mergedPct';
 
@@ -127,9 +131,10 @@ export function groupedRows(data, { sort = CAMPUS_SORT_DEFAULT, order = 'desc', 
 /**
  * The campus × year table. `rateMode` shows the student columns as % of the cohort and the PR columns per 100
  * students; the two headline rates (% with a merged PR, merged PRs per 100) are shown in both modes, next to
- * their counts. opts: { ctx, past, rateMode, sort, order, onSort, mix (add All PRs + Mix), below, rows (pre-built), caption }
+ * their counts. opts: { ctx, past, rateMode, sort, order, onSort, mix (add All PRs + Mix), below, rows (pre-built), caption,
+ * contrib (SPEC addendum I: add Open PRs, Issues and Reviews as counts in both modes; a missing key shows 0) }
  */
-export function campusYearTable(data, { ctx, past = false, rateMode = false, sort = CAMPUS_SORT_DEFAULT, order = 'desc', onSort = null, mix = false, period = null, rows = null, caption = 'Students and pull requests by campus and year', firstColumn = 'campus' } = {}) {
+export function campusYearTable(data, { ctx, past = false, rateMode = false, sort = CAMPUS_SORT_DEFAULT, order = 'desc', onSort = null, mix = false, period = null, rows = null, caption = 'Students and pull requests by campus and year', firstColumn = 'campus', contrib = false } = {}) {
   const below = data.smallCohortBelow || 30;
   const list = rows || groupedRows(data, { sort, order, rateMode });
   const withShare = (key) => (r) => h('span', { title: `${fmt.pct(r[key], r.students)} of ${fmt.num(r.students)} students` }, fmt.num(r[key]));
@@ -166,6 +171,11 @@ export function campusYearTable(data, { ctx, past = false, rateMode = false, sor
     prs('Open-source PRs', 'osPrs', 'osPrs', 'osPrsPer100', 'Open-source pull requests opened', 'open-source pull requests'),
     { key: 'osMerged', sortKey: 'osMerged', label: 'Merged PRs', num: true, sortable: true, title: 'Merged open-source pull requests' },
     prs('Major merged', 'majorMerged', 'osMajorMerged', 'osMajorMergedPer100', 'Pull requests merged into major projects', 'merged into major projects'),
+    ...(contrib ? [
+      ['osOpen', 'Open PRs', 'Open-source pull requests opened in the period and still open'],
+      ['osIssues', 'Issues', 'Issues raised in open-source projects'],
+      ['osReviews', 'Reviews', 'Pull requests of other people reviewed in open-source projects'],
+    ].map(([key, label, title]) => ({ key, sortKey: key, label, num: true, sortable: true, title, render: (r) => fmt.num(r[key] ?? 0) })) : []),
     mix ? prs('All PRs', 'totalPrs', 'totalPrs', 'totalPrsPer100', 'Pull requests of every category', 'pull requests') : null,
     mix ? { key: 'mix', label: 'Mix', title: 'All pull requests by category', render: (r) => mixBar(r.byCategory, { merged: r.osMerged, period }) } : null,
   ].filter(Boolean).map((c) => (onSort ? c : { ...c, sortable: false }));
@@ -229,9 +239,10 @@ export function stepToggle(ctx, activity, step = stepOf(ctx.query)) {
 /**
  * Chart input for "campuses by month / week / day" in one of the three scales.
  * → null when there is nothing to compare, else { input (for lineChart / barChart), names, unit, step }
- * opts: { scale, metric: 'opened' | 'merged', unknown (include the Unknown campus), noun ('pull requests'), step ('month' | 'week' | 'day') }
+ * opts: { scale, metric: 'opened' | 'merged', unknown (include the Unknown campus), noun ('pull requests'), step ('month' | 'week' | 'day'),
+ *   word (the verb in the labels; default 'merged' or 'opened' after `metric`, e.g. 'raised' for issues) }
  */
-export function campusMonthSeries(activity, { scale = 'per100', metric = 'merged', unknown = false, noun = 'pull requests', step = 'month' } = {}) {
+export function campusMonthSeries(activity, { scale = 'per100', metric = 'merged', unknown = false, noun = 'pull requests', step = 'month', word: verb = null } = {}) {
   const st = STEPS[step] || STEPS.month;
   if (!activity || !Array.isArray(activity[st.rows])) return null;
   const months = (activity[st.axis] || []).map((m) => m[st.key]);
@@ -244,7 +255,7 @@ export function campusMonthSeries(activity, { scale = 'per100', metric = 'merged
   const names = cohorts.filter((c) => unknown || c.campus !== 'Unknown');
   if (!months.length || !names.length) return null;
   const at = new Map(rows.map((r) => [`${r.campus}|${r[st.key]}`, r]));
-  const word = metric === 'merged' ? 'merged' : 'opened';
+  const word = verb || (metric === 'merged' ? 'merged' : 'opened');
   const rateKey = metric === 'merged' ? 'per100Merged' : 'per100Opened';
   const cell = (c, m) => at.get(`${c.campus}|${m}`) || null;
   const value = (c, m) => {

@@ -106,12 +106,12 @@ test('ranges: IST boundaries, opened vs merged in range, default = academic year
     assert.deepEqual([o.prs.total, o.prs.merged, o.prs.osPrs, o.prs.osMerged, o.prs.osOpen], [3, 2, 2, 2, 1],
       'opened in range: #2 #4 #6; merged in range: #1 (opened earlier) and #2; #3 falls on 1 July IST');
     assert.deepEqual(o.prs.byCategory.low_signal, 1);
-    assert.deepEqual(o.students, { tracked: 3, withAnyPr: 2, withOsPr: 2, withOsMerged: 1, withMajorMerged: 1 });
+    assert.deepEqual(o.students, { tracked: 3, withAnyPr: 2, withOsPr: 2, withOsMerged: 1, withMajorMerged: 1, withOsIssue: 0, withOsReview: 0, withOsContribution: 2 });
     assert.deepEqual(o.topStudents.map((s) => [s.username, s.stats.osMerged, s.stats.osPrs]), [['one', 2, 1]]);
     assert.deepEqual(o.topRepos, [{ name: 'apache/airflow', stars: 5000, tier: 'major', osPrs: 2, osMerged: 2, students: 2 }]);
     assert.equal(o.monthly[0].month, '2026-07');
-    assert.deepEqual(o.monthly.find((m) => m.month === '2026-11'), { month: '2026-11', osOpened: 1, osMerged: 0, allOpened: 1 }, 'bucketed in IST: 31 Oct 19:00 UTC is November');
-    assert.deepEqual(o.monthly.find((m) => m.month === '2026-10'), { month: '2026-10', osOpened: 0, osMerged: 0, allOpened: 0 });
+    assert.deepEqual(o.monthly.find((m) => m.month === '2026-11'), { month: '2026-11', osOpened: 1, osMerged: 0, allOpened: 1, osIssues: 0, osReviews: 0 }, 'bucketed in IST: 31 Oct 19:00 UTC is November');
+    assert.deepEqual(o.monthly.find((m) => m.month === '2026-10'), { month: '2026-10', osOpened: 0, osMerged: 0, allOpened: 0, osIssues: 0, osReviews: 0 });
     // one more day lets the 1 July PR in
     const wider = await get('/api/overview?from=2026-07-01&to=2027-07-01');
     assert.deepEqual([wider.prs.total, wider.prs.merged], [4, 3]);
@@ -525,7 +525,7 @@ test('ranges: rolling presets cut at IST midnight; opened vs merged decide every
     const d30 = await get('/api/overview?range=30d');
     assert.deepEqual([d30.range.from, d30.range.preset, d30.prs.total, d30.prs.merged, d30.prs.osMerged], [day(-29), '30d', 4, 3, 2], '#4 was merged at 23:55 the day before the window');
     assert.deepEqual(d30.prs.byState, { open: 1, merged: 2, closed: 1 }, 'states of the PRs opened in the range');
-    assert.deepEqual(d30.students, { tracked: 4, withAnyPr: 3, withOsPr: 3, withOsMerged: 2, withMajorMerged: 2 }, 'amy counts through a merge of an older PR');
+    assert.deepEqual(d30.students, { tracked: 4, withAnyPr: 3, withOsPr: 3, withOsMerged: 2, withMajorMerged: 2, withOsIssue: 0, withOsReview: 0, withOsContribution: 3 }, 'amy counts through a merge of an older PR');
     const m12 = await get('/api/overview?range=12m');
     assert.deepEqual([m12.range.preset, m12.range.to, m12.prs.total, m12.prs.merged], ['12m', today, 8, 4]);
     assert.equal((await get(`/api/overview?from=${day(-89)}&to=${today}`)).range.preset, '90d', 'the same dates typed by hand are recognised as the preset');
@@ -592,7 +592,7 @@ test('ranges: rolling presets cut at IST midnight; opened vs merged decide every
       [['ADYPU', 1, 1, 1, 3, 2, 1], ['RU', 2, 2, 1, 1, 1, 1], ['SMRU', 1, 0, 0, 0, 0, 0]]);
     assert.deepEqual([camp.total.totalPrs, camp.total.osMerged, sum(camp.rows, 'osMerged'), camp.rows.length], [d30.prs.total, d30.prs.osMerged, d30.prs.osMerged, 4]);
     const ru = await get('/api/overview?range=30d&campus=RU');
-    assert.deepEqual([ru.students, ru.prs.total, ru.prs.merged, ru.topStudents.map((s) => s.username)], [{ tracked: 2, withAnyPr: 2, withOsPr: 2, withOsMerged: 1, withMajorMerged: 1 }, 1, 1, ['amy']]);
+    assert.deepEqual([ru.students, ru.prs.total, ru.prs.merged, ru.topStudents.map((s) => s.username)], [{ tracked: 2, withAnyPr: 2, withOsPr: 2, withOsMerged: 1, withMajorMerged: 1, withOsIssue: 0, withOsReview: 0, withOsContribution: 2 }, 1, 1, ['amy']]);
 
     // ---- PR lists and both CSV exports follow the same rule
     const numbers = async (q) => (await get(`/api/prs?category=all&${q}`)).items.map((p) => p.number).sort();

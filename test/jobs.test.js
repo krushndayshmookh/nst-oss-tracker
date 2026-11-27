@@ -95,7 +95,7 @@ test('jobs: startRunner marks interrupted app jobs and resumes queued ones; cli 
   // a cli job that was killed hard hours ago can never finish: it is marked failed
   assert.deepEqual([(await get('dddddddddddd')).status, /^interrupted/.test((await get('dddddddddddd')).error)], ['error', true]);
   const resumed = await get('cccccccccccc');
-  assert.deepEqual([resumed.status, resumed.summary], ['done', { prs: 0, repos: 0, prsChanged: 0, reposChanged: 0 }]);
+  assert.deepEqual([resumed.status, resumed.summary], ['done', { prs: 0, repos: 0, contributions: 0, prsChanged: 0, reposChanged: 0, contributionsChanged: 0 }]);
 });
 
 test('ingest: githubId, re-ingest updates in place, star drift reclassifies the other PRs of a repo', async () => {

@@ -25,7 +25,14 @@ export const TIER_LABELS = { major: 'Major', established: 'Established', emergin
 export const STATE_LABELS = {
   open: 'Open', merged: 'Merged', closed: 'Closed', draft: 'Draft',
   queued: 'Queued', running: 'Running', done: 'Done', error: 'Failed', pending: 'Pending', cancelled: 'Cancelled',
+  approved: 'Approved', changes_requested: 'Changes requested', commented: 'Commented', dismissed: 'Dismissed',
 };
+/** Contribution kinds of SPEC addendum I: the tabs of the Contributions page and the student profile. */
+export const KIND_LABELS = { pr: 'Pull requests', issue: 'Issues', review: 'Reviews' };
+/** Issue states (GET /api/contributions?kind=issue `state`). */
+export const ISSUE_STATE_LABELS = { open: 'Open', closed: 'Closed' };
+/** Verdict of a student's review (GET /api/contributions?kind=review `state`). */
+export const REVIEW_STATE_LABELS = { approved: 'Approved', changes_requested: 'Changes requested', commented: 'Commented', dismissed: 'Dismissed' };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DASH = '—';
@@ -229,6 +236,11 @@ const STATE_ICONS = {
   draft: [['circle', { cx: 6, cy: 6, r: 4, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-dasharray': '2 2' }]],
   queued: [['circle', { cx: 6, cy: 6, r: 4, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-dasharray': '2 2' }]],
   pending: [['circle', { cx: 6, cy: 6, r: 4, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-dasharray': '2 2' }]],
+  // review verdicts (addendum I): tick, ring with a centre dot, speech bubble, dash
+  approved: [['path', { d: 'M2 6.5l2.5 2.5L10 3', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }]],
+  changes_requested: [['circle', { cx: 6, cy: 6, r: 4, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }], ['circle', { cx: 6, cy: 6, r: 1.5, fill: 'currentColor' }]],
+  commented: [['path', { d: 'M2 3h8v5H5.5L3 10V8H2z', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }]],
+  dismissed: [['path', { d: 'M2.5 6h7', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round' }]],
 };
 
 /**
@@ -241,6 +253,30 @@ export function stateBadge(state, label) {
   return h('span', { class: `badge badge-state state-${key || 'pending'}` },
     svg('0 0 12 12', icon, { class: 'state-icon' }),
     h('span', null, label || STATE_LABELS[key] || state || DASH));
+}
+
+/**
+ * Issue state as glyph + label: open is a ring (still in play); closed as completed a filled dot ('Closed');
+ * closed as not planned a cross ('Not planned'), closed as a duplicate a cross ('Duplicate'). The reason is also the
+ * badge's title.
+ */
+export function issueStateBadge(state, stateReason = null) {
+  const s = String(state || '').toLowerCase();
+  if (s === 'open') return stateBadge('open', ISSUE_STATE_LABELS.open);
+  if (s === 'closed') {
+    const node = stateReason === 'not_planned' ? stateBadge('closed', 'Not planned')
+      : stateReason === 'duplicate' ? stateBadge('closed', 'Duplicate') : stateBadge('done', ISSUE_STATE_LABELS.closed);
+    node.title = stateReason === 'not_planned' ? 'Closed as not planned' : stateReason === 'duplicate' ? 'Closed as a duplicate'
+      : stateReason === 'completed' ? 'Closed as completed' : 'Closed';
+    return node;
+  }
+  return stateBadge(s || 'pending');
+}
+
+/** Review verdict ('approved' | 'changes_requested' | 'commented' | 'dismissed') as glyph + label. */
+export function reviewStateBadge(state) {
+  const s = String(state || '').toLowerCase();
+  return stateBadge(s || 'pending', REVIEW_STATE_LABELS[s] || state || DASH);
 }
 
 /** Tier as three pips (major 3, established 2, emerging 1) plus the tier name. */

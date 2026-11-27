@@ -5,7 +5,10 @@ import { api } from '../lib/api.js';
 import { href, setQuery } from '../lib/router.js';
 import {
   h, table, fmt, ghLink, extLink, stateBadge, categoryBadge, overrideBadge, rangeBar, CATEGORIES, CATEGORY_LABELS,
+  issueStateBadge, reviewStateBadge, KIND_LABELS, ISSUE_STATE_LABELS, REVIEW_STATE_LABELS,
 } from '../lib/ui.js';
+
+export { KIND_LABELS, ISSUE_STATE_LABELS, REVIEW_STATE_LABELS };
 
 /* ───────────── meta ───────────── */
 
@@ -25,6 +28,9 @@ export function getMeta() {
 
 /** True when the server implements date ranges (addendum A): /api/meta lists presets. */
 export const hasRanges = (meta) => Boolean(meta && Array.isArray(meta.presets) && meta.presets.length);
+
+/** True when the server tracks issues and reviews too (SPEC addendum I): /api/meta has features.contributions. */
+export const hasContributions = (meta) => Boolean(meta && meta.features && meta.features.contributions);
 
 /* ───────────── date range ───────────── */
 
@@ -244,6 +250,65 @@ export function prTable(rows, ctx, { student = true, project = true, sort = null
     },
   ].filter(Boolean);
   return table({ columns, rows, sort, order, onSort, empty, caption });
+}
+
+/* ───────────── contribution table (SPEC addendum I) ───────────── */
+
+/** Link to the Contributions page for one kind ('pr' | 'issue' | 'review') with filters, keeping the date range. */
+export function contribHref(kind, query = {}, ctx = null) {
+  return link('/prs', { ...(kind && kind !== 'pr' ? { kind } : {}), ...query }, ctx);
+}
+
+/**
+ * Issues or reviews from GET /api/contributions (or the `issues` / `reviews` blocks of a student profile).
+ * opts: { kind ('issue' | 'review'; default: the kind of the first row, else 'issue'), student, project, sort, order, onSort, empty, caption }
+ * Issue rows: title → the issue on GitHub, project, student, state, category, opened, comments.
+ * Review rows: PR title → the review on GitHub, project, student, verdict, PR state, reviews, first reviewed.
+ */
+export function contributionTable(items, ctx, { kind = null, student = true, project = true, sort = null, order = 'desc', onSort = null, empty = null, caption = null } = {}) {
+  const rows = Array.isArray(items) ? items : [];
+  const k = kind || (rows[0] && rows[0].kind) || 'issue';
+  const review = k === 'review';
+  const sortable = Boolean(onSort);
+  const columns = [
+    {
+      key: 'title', label: review ? 'Pull request reviewed' : 'Issue', wrap: true,
+      render: (c) => h('div', null,
+        extLink(c.title || `#${c.number}`, c.url, { title: review ? 'Open the review on GitHub' : null }),
+        h('div', { class: 'sub' }, `${c.repo}#${c.number}`, review && c.prAuthor ? ` by ${c.prAuthor}` : null)),
+    },
+    student && {
+      key: 'author', label: 'Student',
+      render: (c) => h('a', { href: link(`/students/${encodeURIComponent(c.author)}`, {}, ctx) }, c.authorName || c.author),
+    },
+    project && {
+      key: 'repo', label: 'Project',
+      render: (c) => h('div', null,
+        h('a', { href: repoHref(c.repo, ctx) }, c.repo),
+        h('div', { class: 'sub' }, `${fmt.compact(c.stars)} stars`)),
+    },
+    review
+      ? { key: 'state', label: 'Verdict', render: (c) => reviewStateBadge(c.state) }
+      : { key: 'state', label: 'State', render: (c) => issueStateBadge(c.state, c.stateReason) },
+    review ? { key: 'prState', label: 'PR state', render: (c) => (c.prState ? stateBadge(c.prState) : null) } : null,
+    { key: 'category', label: 'Category', render: (c) => categoryBadge(c.category, c.tier) },
+    review
+      ? { key: 'reviewCount', label: 'Reviews', num: true, title: 'Reviews the student submitted on this pull request' }
+      : null,
+    {
+      key: 'createdAt', label: review ? 'First reviewed' : 'Opened', sortable, class: 'nowrap',
+      title: review ? 'Date of the student’s first review on this pull request' : null,
+      render: (c) => (review && c.lastReviewedAt && c.lastReviewedAt !== c.createdAt
+        ? h('span', { title: `Latest review ${fmt.date(c.lastReviewedAt)}` }, fmt.date(c.createdAt))
+        : fmt.date(c.createdAt)),
+    },
+    review ? null : { key: 'comments', label: 'Comments', num: true },
+  ].filter(Boolean);
+  return table({
+    columns, rows, sort, order, onSort,
+    empty: empty || (review ? 'No reviews match these filters.' : 'No issues match these filters.'),
+    caption: caption || (review ? 'Reviews given' : 'Issues raised'),
+  });
 }
 
 /** Students-in-this-project table (repo and org pages). Rows are Student plus { prs, merged }. */

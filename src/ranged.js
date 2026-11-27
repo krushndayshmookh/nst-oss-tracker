@@ -75,6 +75,7 @@ export async function groupStats(db, { by, range, match = {} }) {
     ...((student || owner) && { osOpened: sumIf(and(OS, opened)), osMerged: sumIf(and(OS, merged)), ...cats }),
     ...(student && {
       osOpen: sumIf(and(OS, opened, eq('$state', 'open'))),
+      osClosed: sumIf(and(OS, opened, eq('$state', 'closed'))),
       osMajorMerged: sumIf(and(OS, merged, eq('$tier', 'major'))),
       osRepos: setIf(and(OS, touched), '$repoLc'), osOrgs: setIf(and(OS, touched), '$ownerLc'),
       lastOsMergedAt: { $max: { $cond: [and(OS, merged), '$mergedAt', null] } },
@@ -99,23 +100,56 @@ export async function groupStats(db, { by, range, match = {} }) {
   return new Map(rows.map((g) => [g._id, g]));
 }
 
-const byCat = (g) => ({ ...emptyByCategory(), ...Object.fromEntries(CATEGORIES.map((k) => [k, g[`c_${k}`] || 0])) });
+/**
+ * Contribution counters (SPEC addendum I5) per `by` ('author' | 'repoLc' | 'ownerLc'): issues and reviews whose
+ * createdAt is inside the range, active items only, `match` ANDed.
+ * -> Map<id, { issues, osIssues, reviews, osReviews, lastAt }>. `lastAt` is the latest in-range date: an issue's
+ * createdAt, a review's lastReviewedAt when that is inside the range too (else its createdAt).
+ */
+export async function contribGroupStats(db, { by, range, match = {} }) {
+  const cond = inRange(range);
+  const issue = eq('$kind', 'issue');
+  const review = eq('$kind', 'review');
+  const lastReviewed = { $ifNull: ['$lastReviewedAt', '$createdAt'] };
+  const inside = within(lastReviewed, range);
+  const at = { $cond: [issue, '$createdAt', inside === true ? lastReviewed : { $cond: [inside, lastReviewed, '$createdAt'] }] };
+  const rows = await db.collection('contributions').aggregate([
+    { $match: allOf({ active: true }, match, cond ? { createdAt: cond } : {}) },
+    { $group: { _id: `$${by}`, issues: sumIf(issue), osIssues: sumIf(and(issue, OS)), reviews: sumIf(review), osReviews: sumIf(and(review, OS)), lastAt: { $max: at } } },
+  ], AGG).toArray();
+  return new Map(rows.map((g) => [g._id, g]));
+}
 
-/** groupStats row -> the `stats` object of a Student / Repo / Org (same keys as the all-time stats). */
-export function studentStats(g) {
+const byCat = (g) => ({ ...emptyByCategory(), ...Object.fromEntries(CATEGORIES.map((k) => [k, g[`c_${k}`] || 0])) });
+const later = (a, b) => (!a ? b ?? null : !b ? a : (a > b ? a : b));
+
+/**
+ * groupStats row -> the `stats` object of a Student / Repo / Org (same keys as the all-time stats).
+ * `cg` is the contribGroupStats row of the same id (optional: missing -> zeros); either row may be missing.
+ */
+export function studentStats(g, cg) {
+  g ||= {};
+  cg ||= {};
+  const osPrs = g.osOpened ?? 0;
+  const lastPrAt = g.lastPrAt ?? null;
   return {
-    totalPrs: g.opened, mergedPrs: g.merged, osPrs: g.osOpened, osMerged: g.osMerged, osOpen: g.osOpen, osMajorMerged: g.osMajorMerged,
-    osRepos: g.osRepos, osOrgs: g.osOrgs, byCategory: byCat(g),
-    firstPrAt: g.firstPrAt ?? null, lastPrAt: g.lastPrAt ?? null, lastOsMergedAt: g.lastOsMergedAt ?? null,
+    totalPrs: g.opened ?? 0, mergedPrs: g.merged ?? 0, osPrs, osMerged: g.osMerged ?? 0, osOpen: g.osOpen ?? 0, osMajorMerged: g.osMajorMerged ?? 0,
+    osRepos: g.osRepos ?? 0, osOrgs: g.osOrgs ?? 0, byCategory: byCat(g),
+    firstPrAt: g.firstPrAt ?? null, lastPrAt, lastOsMergedAt: g.lastOsMergedAt ?? null,
+    osClosed: g.osClosed ?? 0, totalIssues: cg.issues ?? 0, osIssues: cg.osIssues ?? 0, totalReviews: cg.reviews ?? 0, osReviews: cg.osReviews ?? 0,
+    osContributions: osPrs + (cg.osIssues ?? 0) + (cg.osReviews ?? 0), lastActivityAt: later(lastPrAt, cg.lastAt ?? null),
   };
 }
-export function repoStats(g) {
-  return { prs: g.opened, merged: g.merged, open: g.open, closed: g.closed, students: g.students, campuses: [...(g.campuses || [])].sort(),
-    firstPrAt: g.firstPrAt ?? null, lastPrAt: g.lastPrAt ?? null };
+export function repoStats(g, cg) {
+  g ||= {};
+  return { prs: g.opened ?? 0, merged: g.merged ?? 0, open: g.open ?? 0, closed: g.closed ?? 0, students: g.students ?? 0, campuses: [...(g.campuses || [])].sort(),
+    firstPrAt: g.firstPrAt ?? null, lastPrAt: g.lastPrAt ?? null, issues: cg?.issues ?? 0, reviews: cg?.reviews ?? 0 };
 }
-export function ownerStats(g) {
-  return { repos: g.repos, prs: g.opened, merged: g.merged, osPrs: g.osOpened, osMerged: g.osMerged, students: g.students,
-    maxStars: g.maxStars ?? 0, byCategory: byCat(g) };
+export function ownerStats(g, cg) {
+  g ||= {};
+  return { repos: g.repos ?? 0, prs: g.opened ?? 0, merged: g.merged ?? 0, osPrs: g.osOpened ?? 0, osMerged: g.osMerged ?? 0, students: g.students ?? 0,
+    maxStars: g.maxStars ?? 0, byCategory: byCat(g),
+    issues: cg?.issues ?? 0, reviews: cg?.reviews ?? 0, osIssues: cg?.osIssues ?? 0, osReviews: cg?.osReviews ?? 0 };
 }
 
 // ---------- activity ----------
@@ -143,8 +177,16 @@ const dowOf = (ymd) => new Date(`${ymd}T00:00:00Z`).getUTCDay() || 7; // Mon=1 â
  * students, per100Opened, per100Merged (count / students x 100, 1 decimal), activeStudents (distinct students of the
  * campus with an event in that month / week / day) and activePct. A campus without students has null rates.
  */
+export const CONTRIB_METRICS = { issues: 'issue', reviews: 'review' };
+
+/**
+ * `metric` 'issues' | 'reviews' (addendum I5) counts the contributions of that kind by createdAt instead of PRs: the
+ * response has the same shape, every counter row carries the count under `opened` and under the metric's own key
+ * (`issues` / `reviews`), `merged` is 0.
+ */
 export async function activity(db, { match = {}, range, metric = 'opened', tz = TZ, now = new Date(), cohorts = null }) {
-  const { prs } = collections(db);
+  const contribKind = CONTRIB_METRICS[metric] || null;
+  const prs = contribKind ? db.collection('contributions') : collections(db).prs;
   const cond = inRange(range);
   // Opened and merged events are read by two index-friendly pipelines each (hour x campus counts, day x author pairs)
   // instead of one $unwind over every PR: on the full dataset this is 3-4 times faster for wide ranges.
@@ -156,12 +198,12 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
       prs.aggregate([{ $match }, { $group: { _id: { d: str('%Y-%m-%d'), a: '$author' }, c: { $first: '$campus' } } }], AGG).toArray(),
     ];
   };
-  const [openedRows, openedAuthors, mergedRows, mergedAuthors] = await Promise.all([
-    ...events('createdAt', {}), ...events('mergedAt', { state: 'merged' }),
-  ]);
+  const [openedRows, openedAuthors, mergedRows = [], mergedAuthors = []] = await Promise.all(contribKind
+    ? events('createdAt', { kind: contribKind })
+    : [...events('createdAt', {}), ...events('mergedAt', { state: 'merged' })]);
   const rows = [...openedRows.map((r) => ({ k: 'opened', ...r })), ...mergedRows.map((r) => ({ k: 'merged', ...r }))];
 
-  const zero = () => ({ opened: 0, merged: 0 });
+  const zero = contribKind ? () => ({ opened: 0, merged: 0, [metric]: 0 }) : () => ({ opened: 0, merged: 0 });
   const months = new Map();
   const weeks = new Map();
   const dates = new Map();
@@ -176,8 +218,10 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
   const campusWeekAuthors = new Map();
   const campusDayAuthors = new Map();
   const allAuthors = new Set();
-  const totals = { opened: 0, merged: 0, activeStudents: 0 };
+  const totals = { ...zero(), activeStudents: 0 };
   const bump = (map, key) => { let v = map.get(key); if (!v) { v = zero(); map.set(key, v); } return v; };
+  // add(v, k, n): the count of an event kind, mirrored under the metric's key for contribution metrics
+  const add = contribKind ? (v, k, n) => { v[k] += n; v[metric] += n; } : (v, k, n) => { v[k] += n; };
   let first = null;
   let last = null;
   for (const r of rows) {
@@ -186,17 +230,17 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
     const month = date.slice(0, 7);
     const hour = Number(r._id.h.slice(11, 13));
     const dow = dowOf(date);
-    totals[k] += r.n;
-    bump(months, month)[k] += r.n;
-    bump(weeks, weekStartOf(date, dow))[k] += r.n;
-    bump(dates, date)[k] += r.n;
-    bump(weekdays, dow)[k] += r.n;
-    bump(hours, hour)[k] += r.n;
-    bump(cells, `${dow}-${hour}`)[k] += r.n;
+    add(totals, k, r.n);
+    add(bump(months, month), k, r.n);
+    add(bump(weeks, weekStartOf(date, dow)), k, r.n);
+    add(bump(dates, date), k, r.n);
+    add(bump(weekdays, dow), k, r.n);
+    add(bump(hours, hour), k, r.n);
+    add(bump(cells, `${dow}-${hour}`), k, r.n);
     const campus = r._id.c || 'Unknown';
-    bump(campusMonths, `${campus}|${month}`)[k] += r.n;
-    bump(campusWeeks, `${campus}|${weekStartOf(date, dow)}`)[k] += r.n;
-    bump(campusDays, `${campus}|${date}`)[k] += r.n;
+    add(bump(campusMonths, `${campus}|${month}`), k, r.n);
+    add(bump(campusWeeks, `${campus}|${weekStartOf(date, dow)}`), k, r.n);
+    add(bump(campusDays, `${campus}|${date}`), k, r.n);
     if (!first || date < first) first = date;
     if (!last || date > last) last = date;
   }
@@ -261,7 +305,7 @@ export async function activity(db, { match = {}, range, metric = 'opened', tz = 
   return out;
 }
 
-/** Monthly series { month, osOpened, osMerged, allOpened } for the months of the range (last 24 months when unbounded), in `tz`. */
+/** Monthly series { month, osOpened, osMerged, allOpened, osIssues, osReviews } for the months of the range (last 24 months when unbounded), in `tz`. */
 export async function monthlySeries(db, { match = {}, range, tz = TZ, now = new Date() }) {
   const { prs } = collections(db);
   const today = zoned(now, tz).ymd;
@@ -284,7 +328,7 @@ export async function monthlySeries(db, { match = {}, range, tz = TZ, now = new 
   const months = monthsBetween(first, hi.slice(0, 7));
   const month = (field) => ({ $dateToString: { format: '%Y-%m', date: field, timezone: tz } });
   const cond = inRange(range);
-  const [opened, merged] = await Promise.all([
+  const [opened, merged, contrib] = await Promise.all([
     prs.aggregate([
       { $match: allOf({ active: true }, match, cond ? { createdAt: cond } : {}) },
       { $group: { _id: month('$createdAt'), allOpened: { $sum: 1 }, osOpened: sumIf(OS) } },
@@ -293,8 +337,14 @@ export async function monthlySeries(db, { match = {}, range, tz = TZ, now = new 
       { $match: allOf({ active: true, category: 'open_source', state: 'merged' }, match, cond ? { mergedAt: cond } : { mergedAt: { $type: 'date' } }) },
       { $group: { _id: month('$mergedAt'), osMerged: { $sum: 1 } } },
     ], AGG).toArray(),
+    db.collection('contributions').aggregate([
+      { $match: allOf({ active: true, category: 'open_source' }, match, cond ? { createdAt: cond } : {}) },
+      { $group: { _id: month('$createdAt'), osIssues: sumIf(eq('$kind', 'issue')), osReviews: sumIf(eq('$kind', 'review')) } },
+    ], AGG).toArray(),
   ]);
   const o = new Map(opened.map((r) => [r._id, r]));
   const m = new Map(merged.map((r) => [r._id, r]));
-  return months.map((k) => ({ month: k, osOpened: o.get(k)?.osOpened ?? 0, osMerged: m.get(k)?.osMerged ?? 0, allOpened: o.get(k)?.allOpened ?? 0 }));
+  const x = new Map(contrib.map((r) => [r._id, r]));
+  return months.map((k) => ({ month: k, osOpened: o.get(k)?.osOpened ?? 0, osMerged: m.get(k)?.osMerged ?? 0, allOpened: o.get(k)?.allOpened ?? 0,
+    osIssues: x.get(k)?.osIssues ?? 0, osReviews: x.get(k)?.osReviews ?? 0 }));
 }

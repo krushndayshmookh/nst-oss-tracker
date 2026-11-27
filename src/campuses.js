@@ -48,6 +48,7 @@ const emptyTiers = () => Object.fromEntries(TIERS.map((t) => [t, 0]));
 function emptyBlock(campus, year, batch) {
   return { campus, year, batch, students: 0, withAnyPr: 0, withOsPr: 0, withOsMerged: 0, withMajorMerged: 0,
     totalPrs: 0, osPrs: 0, osMerged: 0, osMajorMerged: 0, byCategory: emptyByCategory(),
+    osOpen: 0, osIssues: 0, osReviews: 0, withOsIssue: 0, withOsReview: 0,
     tierMix: { opened: emptyTiers(), merged: emptyTiers() }, contrib: [] };
 }
 /** Adds one student (its `stats` of the range, or nothing when it has no PR there) to a block. */
@@ -63,6 +64,12 @@ function addStudent(block, st) {
   block.osMerged += st.osMerged || 0;
   block.osMajorMerged += st.osMajorMerged || 0;
   for (const k of CATEGORIES) block.byCategory[k] += st.byCategory?.[k] || 0;
+  // addendum I: stored stats may predate these keys
+  block.osOpen += st.osOpen || 0;
+  block.osIssues += st.osIssues || 0;
+  block.osReviews += st.osReviews || 0;
+  if (st.osIssues > 0) block.withOsIssue++;
+  if (st.osReviews > 0) block.withOsReview++;
 }
 
 const rates = (b, students = b.students) => ({
@@ -78,6 +85,7 @@ export function blockOut(b) {
     campus: b.campus, year: b.year, batch: b.batch,
     students: b.students, withAnyPr: b.withAnyPr, withOsPr: b.withOsPr, withOsMerged: b.withOsMerged, withMajorMerged: b.withMajorMerged,
     totalPrs: b.totalPrs, osPrs: b.osPrs, osMerged: b.osMerged, osMajorMerged: b.osMajorMerged, byCategory: { ...b.byCategory },
+    osOpen: b.osOpen, osIssues: b.osIssues, osReviews: b.osReviews, withOsIssue: b.withOsIssue, withOsReview: b.withOsReview,
     smallCohort: isSmall(b.students), ...rates(b),
     tierMix: { opened: { ...b.tierMix.opened }, merged: { ...b.tierMix.merged } },
   };
@@ -145,16 +153,17 @@ const byWork = (a, b) => b.osMerged - a.osMerged || b.osPrs - a.osPrs || (a.id <
  * Everything GET /api/campuses and GET /api/campuses/:campus answer with, for one range.
  * `ranged` is the Map of groupStats(by 'author') rows of the range (or a promise of it: it is awaited together with
  * the other queries), or null for all time (then the precomputed `stats` of the students are used).
+ * `contribRanged` is the Map (or promise) of contribGroupStats(by 'author') rows of the same range, used with `ranged`.
  * The result is plain data and safe to cache.
  */
-export async function campusComparison(db, { range, ranged = null, now = new Date(), tz = TZ }) {
+export async function campusComparison(db, { range, ranged = null, contribRanged = null, now = new Date(), tz = TZ }) {
   const c = collections(db);
   const prev = previousRange(range, now, tz);
   const { opened, merged } = rangeFlags(range);
   const prevFlags = prev ? rangeFlags(prev) : null;
 
   const allTime = !ranged;
-  const [students, pairs, prevRows, perStudent] = await Promise.all([
+  const [students, pairs, prevRows, perStudent, perStudentContrib] = await Promise.all([
     c.students.find({ active: true }, { projection: { campus: 1, batch: 1, ...(allTime && { stats: 1 }) } }).maxTimeMS(15000).toArray(),
     // open-source work of the range per student × repo × tier: tier mix, top orgs / repos and shared orgs all come from
     // these few thousand rows, and through the student they are attributed to the same campus as every other number
@@ -169,8 +178,10 @@ export async function campusComparison(db, { range, ranged = null, now = new Dat
         osMajorMerged: sumIf(and(OS, prevFlags.merged, eq('$tier', 'major'))) } },
     ], AGG).toArray() : [],
     ranged,
+    allTime ? null : contribRanged,
   ]);
   ranged = perStudent;
+  const contrib = perStudentContrib || new Map();
 
   // --- students -> blocks
   const rows = new Map();
@@ -183,7 +194,7 @@ export async function campusComparison(db, { range, ranged = null, now = new Dat
     const year = yearLabel(s.batch, now);
     const key = `${campus}\u0000${year}`;
     const batch = Number.isFinite(s.batch) ? s.batch : null;
-    const st = ranged ? (ranged.has(s._id) ? studentStats(ranged.get(s._id)) : null) : s.stats;
+    const st = ranged ? (ranged.has(s._id) || contrib.has(s._id) ? studentStats(ranged.get(s._id), contrib.get(s._id)) : null) : s.stats;
     let row = rows.get(key);
     if (!row) { row = emptyBlock(campus, year, batch); rows.set(key, row); } else if (row.batch !== batch) row.batch = null; // several batches share a label
     let campusTotal = totals.get(campus);
