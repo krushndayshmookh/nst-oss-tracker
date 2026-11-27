@@ -13,4 +13,4 @@ resources:
 # The one place where the image tag is set.
 images:
   - name: registry.nstsdc.org:5000/oss-status
-    newTag: "057fe4b"
+    newTag: "aca6b66"
